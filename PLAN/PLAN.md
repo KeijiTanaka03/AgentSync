@@ -69,7 +69,7 @@ AgentSync.app (Electron)
 └─ Main process (Node + TypeScript)
      ├─ Orchestrator (宛先振り分け / 対話ループ / 停止)
      ├─ ClaudeAdapter → `claude -p` (Claude Code CLI, Pro ログイン)
-     ├─ CodexAdapter  → `codex exec` / `codex app-server` (Codex CLI, ChatGPT ログイン)
+     ├─ CodexAdapter  → `codex app-server` (Codex CLI, ChatGPT ログイン。常駐させる)
      └─ 会話ファイル (会話ごとの JSON: 発言の並び・各AIのセッションID)
 ```
 - **Electron を選ぶ理由**: CLI の起動・停止に Node が要るため。Electron なら Node が最初から入っているので、アプリ 1 つで完結する。画面と裏側の処理は IPC でつなぐので、ネットワークのポートを開けずに済む
@@ -83,7 +83,7 @@ AgentSync.app (Electron)
 - **データの保存先**: `~/Library/Application Support/AgentSync/`（会話ごとの JSON ファイルと、チャット用の空の作業ディレクトリ）
 - **Adapter の共通インターフェース**: `send(convId, text, onDelta) → {text, sessionId}` と `abort()`。将来 API キー方式（Anthropic / OpenAI API）や Gemini などを足すときも、Adapter を追加するだけで済むようにする
 - **Claude**: `claude -p --output-format stream-json --resume <sessionId> --model … --append-system-prompt …` で呼ぶ。ツールは無効にし、空の作業ディレクトリで実行する（チャット専用にする）
-- **GPT**: 初回は `codex exec --json`、2 回目以降は `codex exec resume <sessionId>` で呼ぶ。`--sandbox read-only` を付け、作業ディレクトリは空にする
+- **GPT**: `codex app-server` を 1 つ常駐させ、JSON-RPC で話す。会話ごとに `thread/start`（2 回目以降は `thread/resume`）、発言ごとに `turn/start`。返答は `item/agentMessage/delta` で 1 文字ずつ届き、停止は `turn/interrupt`。チャットでは `sandbox: read-only`・`approvalPolicy: never` で、作業ディレクトリは空にする。当初は `codex exec` を予定していたが、少しずつ届く表示・途中停止・承認の中継がすべて app-server でできるので、チャットとコーディングの両方を app-server に統一した
 - **グループ文脈の渡し方（差分方式）**: 各 AI は自分の CLI セッションを持ち続ける。送るときは「その AI が前回発言してから後に増えた、他の参加者の発言」を `[ユーザー]: … / [GPT]: …` の形でまとめて渡す。会話全体を毎回送らないので、使用枠を節約できる
 - **system プロンプトの方針**: 「あなたは Claude。グループチャットにユーザーと GPT がいる。発言者のラベルを付けずに、自分の発言だけを返す」
 
@@ -155,7 +155,7 @@ AgentSync.app (Electron)
 - **作業フォルダの外には書き込ませない**
 - 実装＋レビューを始めるときは、作業ブランチを作るよう提案する（変更をまとめて捨てられるように）
 
-### 7.5 CLI との繋ぎ方（Phase 1 の最初に実機で確認）
+### 7.5 CLI との繋ぎ方
 | | Claude | GPT |
 |---|---|---|
 | 呼び出し | `claude -p --output-format stream-json`（作業ディレクトリ = プロジェクトのフォルダ） | `codex app-server`（JSON-RPC で常駐させる） |
@@ -171,13 +171,13 @@ AgentSync.app (Electron)
 - **対話モードの止め忘れ**: 回数の制限がないので、止めないと使用枠を使い続ける → 対話中はバーを常に出し、アプリのウィンドウを閉じたら自動で止める
 - **規約**: どちらの CLI も「本人が自分のマシンで使う」範囲で使う。サブスクの認証を外部に公開・共有しない（アプリはネットワークのポートを開けない）
 - **速度**: CLI はプロセスの起動があるぶん API より遅い（1 発言あたり数秒の上乗せ）。まず動かしてみて、遅すぎる場合はプロセスを常駐させる方式を検討する
-- CLI のオプションはバージョンによって変わる可能性がある → Phase 1 の最初に実機で確認する
-- **コーディングモードの承認の中継**: CLI が承認リクエストを外部に出す方法（Claude の `--permission-prompt-tool`、Codex の app-server）が想定どおりに動くかが一番のリスク → Phase 1 の最初に確認する
+- CLI のオプションはバージョンによって変わる可能性がある → 11 章の確認結果を基準にし、CLI を更新したら `npm run test:e2e` で確かめる
+- **コーディングモードの承認の中継**: CLI が承認リクエストを外部に出す方法（Claude の `--permission-prompt-tool`、Codex の app-server）が想定どおりに動くかが一番のリスク → 仕組みがあることは確認済み（11 章）。実際の中継は Phase 4 で確かめる
 - **auto モード**: 確認なしで編集・実行するので、誤操作に気づきにくい → 作業ブランチで使うよう促す。auto の間はヘッダーに目立つバッジを出す
 - **使用枠の消費**: 実装＋レビューのループは使用枠を多く使う → 往復回数の上限を低めにする（既定 3）
 
 ## 9. 実装フェーズ
-- **Phase 1 MVP**: Electron の雛形を作る。最初に、画面なしでの CLI の動作を確かめる（`claude -p` の JSON 出力と resume、Codex app-server の起動、承認リクエストの中継）。Claude Code は普段から問題なく使えている。その後、1 会話・個別送信・同時送信・ストリーミング表示を作る
+- **Phase 1 MVP**（実装済み）: Electron の雛形、1 会話・個別送信・同時送信・ストリーミング表示・停止。画面なしでの CLI の動作は確認済み（11 章）
 - **Phase 2**: 対話モード（停止・割り込み）
 - **Phase 3**: 会話一覧・永続化・モデルの切り替え・Claude.ai 風の仕上げ・ダークモード・`.app` へのパッケージ化
 - **Phase 4 コーディングモード**: 単独で使う機能（フォルダ選択・ツールログ・承認カード）→ 設計の対話（読み取り専用）→ 実装＋レビューのループ
@@ -187,3 +187,25 @@ AgentSync.app (Electron)
 - アプリの形: Electron の Mac デスクトップアプリ（開発中は `npm run dev`）
 - 役割のプリセットも、役割（system プロンプト）の入力欄も作らない。役割はチャットの中で指示する（例:「Claude は賛成、GPT は反対の立場で議論して」）
 - 設定画面は作らない。モデルはヘッダーのチップから切り替える
+
+## 11. 実機での確認結果（2026-11-16）
+確認した環境: Claude Code 2.1.308、Codex CLI 0.169.0（どちらもサブスクのアカウントでログイン済み）
+
+| 項目 | Claude（`claude -p`） | GPT（`codex app-server`） |
+|---|---|---|
+| 返答を少しずつ受け取る | `--output-format stream-json --verbose --include-partial-messages` の `content_block_delta` | `item/agentMessage/delta` 通知 |
+| 続きから話す | `--resume <session_id>`（同じ ID のまま続く） | `thread/resume`（新しいプロセスからでも続く） |
+| チャット専用にする | `--tools ""` と `--strict-mcp-config` | `sandbox: read-only`、`approvalPolicy: never` |
+| 指示（system プロンプト） | `--system-prompt` | `developerInstructions` |
+| 途中で止める | プロセスを終了する | `turn/interrupt` |
+| auto モード | `--permission-mode auto` がある | `approvalPolicy` と `sandbox: workspace-write` |
+| 承認の中継 | `--permission-prompts host` と `--permission-prompt-tool` がある | `item/commandExecution/requestApproval` などのサーバーからのリクエスト |
+| 使用枠の状況 | `rate_limit_event`（5 時間枠・7 日枠の使用率） | `account/rateLimits/updated` 通知 |
+| モデル一覧 | 一覧を出すコマンドはない（`--model` に別名か正式 ID を渡す） | `model/list`（`codex debug models` と同じ中身） |
+| 1 回の応答時間の目安 | 約 3 秒（haiku） | 約 5〜6 秒（gpt-6-luna） |
+
+- Claude Code の中から開発用に起動すると、親のセッションの環境変数（`CLAUDECODE` など）が子の `claude` に引き継がれる → 子プロセスに渡す前に取り除く（`src/main/env.ts`）
+- VS Code の拡張機能の中のシェルには `ELECTRON_RUN_AS_NODE` が入っていることがあり、Electron が Node として起動してしまう → `npm run dev` で取り除く
+- 存在しないセッション ID で resume すると、`result.errors` に理由が入って終了コード 1 で終わる
+- AgentSync での会話は、各 CLI の普段の履歴にも残る（Claude Code はチャット用フォルダ `~/Library/Application Support/AgentSync/chat-workdir` の会話として、Codex は通常のスレッドとして）。CLI 側から続きを開くこともできる
+- 2 人へ同時に送ったときは、送った時点で 2 つの吹き出しを並べ、それぞれに返事が流れ込む（終わった順に並べ替えると、読んでいる途中で吹き出しが動くため）
