@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentSync コーディングモード</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&amp;family=Noto+Serif+JP:wght@500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#B5532F}a:hover{color:#8A3E22}
+</style>
+</head>
+<body>
+<div style="width: 100%; min-height: 960px; display: flex; flex-wrap: wrap; background: #FAF9F5; color: #141413; font-family: 'Noto Sans JP', system-ui, sans-serif; font-size: 15px; line-height: 1.7; box-sizing: border-box">
+
+  <nav aria-label="会話一覧" style="flex: 1 1 240px; max-width: 280px; min-width: 220px; background: #F2EFE6; border-right: 1px solid #E3DED1; padding: 20px 14px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px">
+    <div style="font-family: 'Noto Serif JP', serif; font-size: 22px; font-weight: 600; padding: 0 8px">AgentSync</div>
+    <button type="button" style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 1px solid #D9D3C3; border-radius: 10px; background: #FAF9F5; color: #141413; font: inherit; font-weight: 500; cursor: pointer">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      新しい会話
+    </button>
+    <div style="font-size: 12px; color: #5E5D57; padding: 0 8px">チャット</div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <a href="#" style="padding: 8px 12px; border-radius: 10px; color: #141413; text-decoration: none">設計相談</a>
+      <a href="#" style="padding: 8px 12px; border-radius: 10px; color: #141413; text-decoration: none">ディベート: 在宅勤務</a>
+    </div>
+    <div style="font-size: 12px; color: #5E5D57; padding: 0 8px">コーディング</div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <a href="#" style="display: flex; flex-direction: column; padding: 10px 12px; border-radius: 10px; background: #E6E1D4; color: #141413; text-decoration: none">
+        <span style="font-weight: 500">ログイン画面の改修</span>
+        <span style="font-size: 12px; color: #5E5D57; font-family: 'JetBrains Mono', monospace">~/dev/myapp</span>
+      </a>
+      <a href="#" style="display: flex; flex-direction: column; padding: 10px 12px; border-radius: 10px; color: #141413; text-decoration: none">
+        <span style="font-weight: 500">AgentSync 本体</span>
+        <span style="font-size: 12px; color: #5E5D57; font-family: 'JetBrains Mono', monospace">~/AgentSync</span>
+      </a>
+    </div>
+  </nav>
+
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <header style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 28px; border-bottom: 1px solid #E3DED1">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+        <h1 style="margin: 0; font-family: 'Noto Serif JP', serif; font-size: 20px; font-weight: 600">ログイン画面の改修</h1>
+        <span style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: #F2EFE6; border: 1px solid #E3DED1; border-radius: 8px; padding: 2px 8px">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          ~/dev/myapp
+        </span>
+        <span style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: #F2EFE6; border: 1px solid #E3DED1; border-radius: 8px; padding: 2px 8px">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-12 7"/></svg>
+          feat/login-validation
+        </span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px; font-size: 13px">
+        <span style="display: flex; align-items: center; gap: 6px"><span style="width: 26px; height: 26px; border-radius: 50%; background: #B5532F; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 700">C</span>実装役 · 書き込み可</span>
+        <span style="display: flex; align-items: center; gap: 6px"><span style="width: 26px; height: 26px; border-radius: 50%; background: #2F7D62; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 700">G</span>レビュー役 · 読み取り専用</span>
+      </div>
+    </header>
+
+    <section aria-label="メッセージ" style="flex-grow: 1; padding: 24px 28px; display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 880px; margin: 0 auto; box-sizing: border-box">
+
+      <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px">
+        <div style="max-width: 72%; background: #E9E4D8; border-radius: 18px 18px 4px 18px; padding: 10px 16px">
+          <span style="display: inline-block; font-size: 12px; font-weight: 700; color: #FAF9F5; background: #141413; border-radius: 999px; padding: 0 8px; margin-right: 6px">実装＋レビュー</span>
+          ログイン画面にメールとパスワードのバリデーションを追加して。
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px; align-items: flex-start">
+        <span style="flex: 0 0 34px; height: 34px; border-radius: 50%; background: #B5532F; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 700">C</span>
+        <div style="display: flex; flex-direction: column; gap: 6px; max-width: 78%; min-width: 0">
+          <span style="font-size: 12px; color: #5E5D57"><b style="color: #141413">Claude</b> · 実装 · 1 往復目</span>
+          <div style="background: #FFFFFF; border: 1px solid #EAD9CF; border-radius: 4px 18px 18px 18px; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px">
+            <div style="display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; color: #3D3C38; background: #F7F5EF; border-radius: 10px; padding: 8px 12px">
+              <span>▸ 読み取り  src/pages/Login.tsx</span>
+              <span>▸ 検索      "validate" — 3 件</span>
+              <span>▸ 編集      src/pages/Login.tsx  <b style="color: #24604B">+18</b> <b style="color: #9A2F2F">−3</b>  <span style="color: #5E5D57">· 承認済み</span></span>
+              <span>▸ 編集      src/lib/validators.ts  <b style="color: #24604B">+6</b> <b style="color: #9A2F2F">−2</b>  <span style="color: #5E5D57">· 承認済み</span></span>
+              <span>▸ 実行      npm test  <b style="color: #24604B">✓ 12 passed</b></span>
+            </div>
+            <div>メール形式とパスワードの長さ（8 文字以上）のチェックを追加しました。テストはすべて通っています。</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 12px; font-size: 12px; color: #5E5D57">
+        <span style="flex-grow: 1; height: 1px; background: #E3DED1"></span>
+        GPT にレビューを依頼 · git diff 2 ファイル +24 −5
+        <span style="flex-grow: 1; height: 1px; background: #E3DED1"></span>
+      </div>
+
+      <div style="display: flex; gap: 10px; align-items: flex-start">
+        <span style="flex: 0 0 34px; height: 34px; border-radius: 50%; background: #2F7D62; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 700">G</span>
+        <div style="display: flex; flex-direction: column; gap: 6px; max-width: 78%; min-width: 0">
+          <span style="font-size: 12px; color: #5E5D57"><b style="color: #141413">GPT</b> · レビュー · ▸ Claude への返信</span>
+          <div style="background: #FFFFFF; border: 1px solid #CFE3DA; border-radius: 4px 18px 18px 18px; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px">
+            <div style="display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; color: #3D3C38; background: #F7F5EF; border-radius: 10px; padding: 8px 12px">
+              <span>▸ 読み取り  src/lib/validators.ts</span>
+              <span>▸ 読み取り  src/pages/Login.test.tsx</span>
+            </div>
+            <div>指摘は 2 件です。<br>1. 空白だけのパスワードが通ってしまいます。<br>2. エラーメッセージが直書きで、既存の i18n を使っていません。</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px; align-items: flex-start">
+        <span style="flex: 0 0 34px; height: 34px; border-radius: 50%; background: #B5532F; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 700">C</span>
+        <div style="display: flex; flex-direction: column; gap: 6px; max-width: 78%; min-width: 0">
+          <span style="font-size: 12px; color: #5E5D57"><b style="color: #141413">Claude</b> · 修正 · 2 往復目</span>
+          <div style="background: #FFFFFF; border: 2px solid #B5532F; border-radius: 4px 18px 18px 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 700; color: #8A3E22">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+              承認が必要です
+            </div>
+            <div style="font-size: 14px">コマンドを実行しようとしています</div>
+            <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; background: #141413; color: #FAF9F5; border-radius: 8px; padding: 8px 12px">npm run lint -- --fix</code>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap">
+              <button type="button" style="min-height: 40px; padding: 0 16px; border-radius: 10px; border: 0; background: #B5532F; color: #FFFFFF; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer">許可</button>
+              <button type="button" style="min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid #D9D3C3; background: #FFFFFF; color: #141413; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer">今回は全部許可</button>
+              <button type="button" style="min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid #D9D3C3; background: #FFFFFF; color: #9A2F2F; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer">拒否</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer style="padding: 0 28px 24px; width: 100%; max-width: 880px; margin: 0 auto; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: #F2EFE6; border: 1px solid #E3DED1; border-radius: 14px; padding: 8px 10px 8px 16px">
+        <div style="display: flex; align-items: center; gap: 12px; font-size: 13px; flex-wrap: wrap">
+          <b>実装＋レビュー</b>
+          <span>2 / 3 往復</span>
+          <span style="color: #5E5D57">次: GPT のレビュー（APPROVED で終了）</span>
+        </div>
+        <span style="font-size: 12px; color: #5E5D57; padding-right: 6px">もう一度「実装＋レビュー」を押すと止まります</span>
+      </div>
+      <div style="background: #FFFFFF; border: 1px solid #D9D3C3; border-radius: 18px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 2px 10px rgba(20,20,19,0.05)">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px">
+          <div role="group" aria-label="宛先" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
+            <span style="font-size: 12px; color: #5E5D57; margin-right: 2px">宛先</span>
+            <button type="button" aria-pressed="false" style="min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #D9D3C3; background: #FFFFFF; color: #141413; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">全員（読み取り専用）</button>
+            <button type="button" aria-pressed="true" style="min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #141413; background: #141413; color: #FAF9F5; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">Claude</button>
+            <button type="button" aria-pressed="false" style="min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #D9D3C3; background: #FFFFFF; color: #24604B; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">GPT</button>
+          </div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center">
+            <div role="group" aria-label="承認の方式" style="display: flex; border: 1px solid #D9D3C3; border-radius: 999px; overflow: hidden">
+              <button type="button" aria-pressed="true" style="min-height: 36px; padding: 0 12px; border: 0; background: #141413; color: #FAF9F5; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">承認制</button>
+              <button type="button" aria-pressed="false" style="min-height: 36px; padding: 0 12px; border: 0; background: #FFFFFF; color: #8A3E22; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">auto</button>
+            </div>
+            <button type="button" style="min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #D9D3C3; background: #F2EFE6; color: #141413; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">設計の対話</button>
+            <button type="button" aria-pressed="true" style="min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #B5532F; background: #B5532F; color: #FFFFFF; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">実装＋レビュー ON</button>
+          </div>
+        </div>
+        <div style="display: flex; align-items: flex-end; gap: 10px">
+          <label for="msg-coding" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">メッセージ</label>
+          <textarea id="msg-coding" rows="2" placeholder="指示を入力…（レビューの指摘の取捨選択などで割り込めます）" style="flex-grow: 1; border: 0; resize: none; font: inherit; color: #141413; background: transparent; outline: none"></textarea>
+          <button type="button" aria-label="送信" style="flex: 0 0 44px; height: 44px; border-radius: 12px; border: 0; background: #B5532F; color: #FFFFFF; display: flex; align-items: center; justify-content: center; cursor: pointer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+</body>
+</html>
