@@ -31,13 +31,20 @@ interface ModelListResponse {
 }
 
 interface ConfigReadResponse {
-  config: { model?: string | null; model_reasoning_effort?: string | null }
+  config: { model?: string | null; model_reasoning_effort?: string | null; mcp_servers?: Record<string, unknown> | null }
 }
 
 /** What the user's Codex configuration sets, if anything. */
 interface CodexConfig {
   model: string | null
   effort: string | null
+  /** Names of the connectors (MCP servers) set up in Codex. */
+  mcpServers: string[]
+}
+
+/** Every connector asks before each tool call, so AgentSync can decide (see the approval handler). */
+export function connectorOverrides(servers: readonly string[]): Record<string, string> {
+  return Object.fromEntries(servers.filter((name) => /^[\w-]+$/.test(name)).map((name) => [`mcp_servers.${name}.default_tools_approval_mode`, 'prompt']))
 }
 
 /** The model and effort a thread runs at. Null: the CLI's own setting. */
@@ -79,7 +86,8 @@ const MAX_DETAIL = 4_000
 /** How a Codex thread may touch the project for an access level. */
 export function codexPolicy(access: Access, approval: 'ask' | 'auto') {
   if (access !== 'write') {
-    return { sandbox: 'read-only', approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+    // 「on-request」, not 「never」: with 「never」 Codex refuses connector calls set to ask first by itself.
+    return { sandbox: 'read-only', approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
   }
   return {
     sandbox: 'workspace-write',
@@ -125,8 +133,10 @@ export function describeCodexItem(item: Json, cwd: string): Pick<ToolLogEntry, '
     case 'webSearch':
       return { kind: 'web', title: oneLine(String(item.query ?? '')) || 'ウェブ検索' }
     case 'mcpToolCall':
-    case 'dynamicToolCall':
-      return { kind: 'other', title: String(item.tool ?? item.server ?? item.type) }
+    case 'dynamicToolCall': {
+      const tool = String(item.tool ?? item.type)
+      return { kind: /search|query/i.test(tool) ? 'search' : 'other', title: item.server ? `${String(item.server)}: ${tool}` : tool }
+    }
     default:
       return null
   }
@@ -213,12 +223,14 @@ export class CodexAdapter implements AgentAdapter {
 
     // Chat: read-only in an empty folder, never asking. Coding: the project folder, as the access allows.
     const policy = codexPolicy(request.access, request.approval)
+    const { mcpServers } = await this.readConfig(rpc)
     const threadSettings = {
       cwd: request.cwd,
       sandbox: policy.sandbox,
       approvalPolicy: policy.approvalPolicy,
       developerInstructions: request.systemPrompt,
       ...(request.model ? { model: request.model } : {}),
+      ...(mcpServers.length > 0 ? { config: connectorOverrides(mcpServers) } : {}),
     }
 
     let threadId = request.sessionId
@@ -253,6 +265,12 @@ export class CodexAdapter implements AgentAdapter {
       efforts: defaults.efforts,
       defaultEffort: defaults.effort,
     }
+  }
+
+  /** The plan's usage limits (`account/rateLimits/read`; uses none of them). */
+  async rateLimits(): Promise<unknown> {
+    const rpc = await this.connect()
+    return rpc.request('account/rateLimits/read', {})
   }
 
   dispose(): void {
@@ -334,8 +352,12 @@ export class CodexAdapter implements AgentAdapter {
   private readConfig(rpc: RpcConnection): Promise<CodexConfig> {
     this.config ??= rpc
       .request<ConfigReadResponse>('config/read', {})
-      .then((response) => ({ model: response.config.model ?? null, effort: response.config.model_reasoning_effort ?? null }))
-      .catch(() => ({ model: null, effort: null }))
+      .then((response) => ({
+        model: response.config.model ?? null,
+        effort: response.config.model_reasoning_effort ?? null,
+        mcpServers: Object.keys(response.config.mcp_servers ?? {}),
+      }))
+      .catch(() => ({ model: null, effort: null, mcpServers: [] }))
     return this.config
   }
 
@@ -382,12 +404,26 @@ export class CodexAdapter implements AgentAdapter {
       // File changes arrive as items first; their approval request only names the item.
       const fileChanges = new Map<string, Json>()
       const report = (item: Json, finished: boolean) => {
-        if (request.access === 'chat' || typeof item.id !== 'string') return
+        if (typeof item.id !== 'string') return
         const described = describeCodexItem(item, request.cwd)
         if (described) request.onTool({ id: item.id, ...described, status: toolStatus(item, finished) })
       }
       this.approvalHandlers.set(threadId, async (method, params) => {
         let ask: ApprovalRequest | null = null
+        if (method === 'mcpServer/elicitation/request') {
+          // A connector's tool call (with every connector set to ask first). Reading goes ahead.
+          const meta = (typeof params._meta === 'object' && params._meta !== null ? params._meta : {}) as Json
+          if (meta.codex_approval_kind !== 'mcp_tool_call') return { action: 'decline' }
+          const annotations = (typeof meta.tool_annotations === 'object' && meta.tool_annotations !== null ? meta.tool_annotations : {}) as Json
+          if (annotations.readOnlyHint === true) return { action: 'accept', content: {} }
+          const tool = String(meta.tool_title ?? meta.tool_name ?? '')
+          const answer = await request.requestApproval({
+            kind: 'other',
+            title: `${String(params.serverName ?? '連携')} を操作: ${tool}`,
+            detail: meta.tool_params === undefined ? null : clip(JSON.stringify(meta.tool_params, null, 2)),
+          })
+          return answer === 'allow' ? { action: 'accept', content: {} } : { action: 'decline' }
+        }
         if (method === 'item/commandExecution/requestApproval') {
           if (onlyReads(params)) return { decision: 'accept' }
           const command = unwrapShell(String(params.command ?? ''))

@@ -284,3 +284,9 @@ AgentSync.app (Electron)
 - 実装＋レビュー（auto、effort low）: Claude が実装（編集と `node greet.js` で確認、約 28 秒）→ 差分をレビュー役に渡す → GPT が APPROVED を返して止まった（合計約 35 秒）。main ブランチだったので、作業ブランチを勧めるお知らせが出た
 - 作業ログの「実行中」の行に、行と点の両方で同じクラス名（`work-running`）を使っていて、行が点の大きさ（幅 7px）につぶれていた → 点を `work-dot` に分けた
 
+### 連携と使用量で確かめたこと（2026-11-17）
+- Claude は `--strict-mcp-config` を外すと claude.ai のコネクタ（Notion・Google Drive・Claude Docs）を使える。読み取り系のツールは自動で許可し、それ以外は承認カードにする
+- Codex は `mcp_servers.<名前>.default_tools_approval_mode='prompt'` で `mcpServer/elicitation/request` が届く。`approvalPolicy: never` だと自動で拒否されるため、読み取りの番でも `on-request` にした
+- 使用量: Claude は `claude -p` に `/usage` を渡すと、モデルを呼ばずに 5 時間枠と週の使用率を返す。Codex は `account/rateLimits/read`
+- 連携の一覧: `claude mcp list`、`codex mcp list --json`。追加・削除も各 CLI のコマンドで行う
+

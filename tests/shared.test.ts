@@ -18,6 +18,7 @@ const empty: ChatState = {
   kind: 'chat',
   workspace: null,
   approvalMode: 'ask',
+  roles: 'single',
   messages: [],
   agents: {
     claude: { id: 'claude', model: null, activeModel: null, effort: null, busy: false, activity: null },

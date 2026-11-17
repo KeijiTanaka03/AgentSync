@@ -13,6 +13,7 @@ import {
   type Recipient,
   type Sender,
   type ToolLogEntry,
+  type Roles,
 } from '../../shared/types'
 import { isConversationId, isEffort } from '../../shared/validate'
 
@@ -35,6 +36,8 @@ export interface ConversationContent {
   participants: Record<AgentId, StoredParticipant>
   /** Coding conversations: how edits and commands are allowed. */
   approvalMode: ApprovalMode
+  /** Coding conversations: no roles, both agents may change the project. */
+  roles: Roles
 }
 
 /** One conversation file: `conversations/<id>.json`. */
@@ -44,6 +47,8 @@ export interface ConversationData extends ConversationContent {
   kind: ConversationKind
   /** The project folder of a coding conversation (absolute); null for a chat. */
   workdir: string | null
+  /** Kept at the top of the list. Older files have no such field. */
+  pinned?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -65,14 +70,25 @@ function parseTool(raw: unknown): ToolLogEntry | null {
   if (!isRecord(raw) || !isString(raw.id) || !isString(raw.title) || !TOOL_KINDS.includes(raw.kind as ToolLogEntry['kind'])) return null
   // A step still running when the app closed did not finish.
   const status = raw.status === 'done' ? 'done' : 'failed'
-  return { id: raw.id, kind: raw.kind as ToolLogEntry['kind'], title: raw.title, status }
+  return {
+    id: raw.id,
+    kind: raw.kind as ToolLogEntry['kind'],
+    title: raw.title,
+    status,
+  }
 }
 
 function parseApproval(raw: unknown): ApprovalEntry | null {
   if (!isRecord(raw) || !isString(raw.id) || !isString(raw.title) || !APPROVAL_KINDS.includes(raw.kind as ApprovalEntry['kind'])) return null
   // A card still waiting when the app closed was never allowed.
   const status = raw.status === 'allowed' ? 'allowed' : 'denied'
-  return { id: raw.id, kind: raw.kind as ApprovalEntry['kind'], title: raw.title, detail: isString(raw.detail) ? raw.detail : null, status }
+  return {
+    id: raw.id,
+    kind: raw.kind as ApprovalEntry['kind'],
+    title: raw.title,
+    detail: isString(raw.detail) ? raw.detail : null,
+    status,
+  }
 }
 
 function parseMessage(raw: unknown): ChatMessage | null {
@@ -117,9 +133,7 @@ function parseParticipant(raw: unknown): StoredParticipant {
 export function parseConversation(raw: unknown, id: string): ConversationData {
   if (!isRecord(raw)) throw new Error('会話のファイルではありません')
   if (raw.version !== FORMAT_VERSION) throw new Error(`対応していない形式です（version ${String(raw.version)}）`)
-  const messages = Array.isArray(raw.messages)
-    ? raw.messages.map(parseMessage).filter((m): m is ChatMessage => m !== null)
-    : []
+  const messages = Array.isArray(raw.messages) ? raw.messages.map(parseMessage).filter((m): m is ChatMessage => m !== null) : []
   const participants = isRecord(raw.participants) ? raw.participants : {}
   const fallbackTime = messages.at(-1)?.at ?? new Date(0).toISOString()
   const code = raw.kind === 'code' && isString(raw.workdir) && path.isAbsolute(raw.workdir)
@@ -130,12 +144,11 @@ export function parseConversation(raw: unknown, id: string): ConversationData {
     kind: code ? 'code' : 'chat',
     workdir: code ? (raw.workdir as string) : null,
     approvalMode: raw.approvalMode === 'auto' ? 'auto' : 'ask',
+    roles: AGENT_IDS.includes(raw.roles as AgentId) ? (raw.roles as Roles) : 'single',
+    pinned: raw.pinned === true,
     createdAt: isString(raw.createdAt) ? raw.createdAt : (messages[0]?.at ?? fallbackTime),
     updatedAt: isString(raw.updatedAt) ? raw.updatedAt : fallbackTime,
-    participants: Object.fromEntries(AGENT_IDS.map((agent) => [agent, parseParticipant(participants[agent])])) as Record<
-      AgentId,
-      StoredParticipant
-    >,
+    participants: Object.fromEntries(AGENT_IDS.map((agent) => [agent, parseParticipant(participants[agent])])) as Record<AgentId, StoredParticipant>,
     messages,
   }
 }
@@ -171,7 +184,10 @@ export class ConversationStore {
   save(data: ConversationData): void {
     const file = this.file(data.id)
     const temporary = path.join(this.directory, `.${data.id}.json.tmp`)
-    writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
+    writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
     renameSync(temporary, file)
   }
 

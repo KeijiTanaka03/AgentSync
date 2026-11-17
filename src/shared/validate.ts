@@ -7,6 +7,7 @@ import {
   type ApprovalMode,
   type SendRequest,
   type SendTarget,
+  type Roles,
 } from './types'
 
 const TARGETS: readonly SendTarget[] = ['all', ...AGENT_IDS]
@@ -66,6 +67,11 @@ export function parseApproval(id: unknown, decision: unknown): { id: string; dec
   if (typeof id !== 'string' || !/^\d{1,9}-\d{1,9}$/.test(id)) throw new Error('承認の指定が不正です')
   if (decision !== 'allow' && decision !== 'allow-all' && decision !== 'deny') throw new Error('承認の指定が不正です')
   return { id, decision }
+}
+
+export function parseRoles(raw: unknown): Roles {
+  if (raw !== 'single' && !AGENT_IDS.includes(raw as AgentId)) throw new Error('役割の指定が不正です')
+  return raw as Roles
 }
 
 export function parseApprovalMode(raw: unknown): ApprovalMode {

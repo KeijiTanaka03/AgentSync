@@ -35,8 +35,26 @@ function oneLine(value: unknown): string {
   return line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE)}…` : line
 }
 
+/** `mcp__claude_ai_Notion__notion-search` → the connector (`Notion`) and its tool (`notion-search`). */
+export function mcpTool(name: string): { server: string; tool: string } | null {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name)
+  if (!match) return null
+  return { server: match[1]!.replace(/^claude_ai_/, '').replace(/_/g, ' '), tool: match[2]! }
+}
+
+/** Connector tools that only read (search, fetch, get, list, …), judged by name. */
+export function isReadOnlyTool(tool: string): boolean {
+  return /(^|[-_.])(search|fetch|get|list|query|read|view|download)([-_.]|$)/i.test(tool)
+}
+
 /** How a Claude Code tool call is shown in the work log. */
 export function describeClaudeTool(name: string, input: Json, cwd: string | null): Pick<ToolLogEntry, 'kind' | 'title'> {
+  const connector = mcpTool(name)
+  if (connector) {
+    const query = typeof input.query === 'string' && input.query ? `「${oneLine(input.query)}」` : ''
+    const kind = !isReadOnlyTool(connector.tool) ? 'other' : /search|query/i.test(connector.tool) ? 'search' : 'read'
+    return { kind, title: `${connector.server}: ${connector.tool}${query}` }
+  }
   switch (name) {
     case 'Read':
       return { kind: 'read', title: shortPath(input.file_path, cwd) }

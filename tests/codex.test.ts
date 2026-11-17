@@ -16,6 +16,8 @@ class FakeAppServer implements RpcConnection {
   /** `model_reasoning_effort` and `model` in the user's Codex settings. */
   configuredEffort: string | null = 'xhigh'
   configuredModel: string | null = null
+  /** Connectors (MCP servers) set up in Codex. */
+  mcpServers: Record<string, unknown> = {}
   private turnCount = 0
 
   async request<T>(method: string, params?: unknown): Promise<T> {
@@ -33,7 +35,7 @@ class FakeAppServer implements RpcConnection {
       case 'turn/interrupt':
         return {} as T
       case 'config/read':
-        return { config: { model: this.configuredModel, model_reasoning_effort: this.configuredEffort } } as T
+        return { config: { model: this.configuredModel, model_reasoning_effort: this.configuredEffort, mcp_servers: this.mcpServers } } as T
       case 'model/list':
         return {
           data: [
@@ -103,15 +105,15 @@ describe('CodexAdapter', () => {
     const result = adapter.run(req)
     await flush()
 
-    expect(server.requests.map((r) => r.method)).toEqual(['initialize', 'thread/start', 'turn/start'])
+    expect(server.requests.map((r) => r.method)).toEqual(['initialize', 'config/read', 'thread/start', 'turn/start'])
     expect(server.notifications).toEqual(['initialized'])
-    expect(server.requests[1]!.params).toEqual({
+    expect(server.requests[2]!.params).toEqual({
       cwd: '/tmp/chat',
       sandbox: 'read-only',
-      approvalPolicy: 'never',
+      approvalPolicy: 'on-request',
       developerInstructions: 'SYS',
     })
-    expect(server.requests[2]!.params.input).toEqual([{ type: 'text', text: '【ユーザー → あなた】\nこんにちは', text_elements: [] }])
+    expect(server.requests[3]!.params.input).toEqual([{ type: 'text', text: '【ユーザー → あなた】\nこんにちは', text_elements: [] }])
     expect(sessions).toEqual(['thread-1'])
     expect(models).toEqual(['gpt-6-sol'])
 
@@ -139,9 +141,9 @@ describe('CodexAdapter', () => {
     await done2
 
     // A resumed thread may carry an effort from an earlier run, so the CLI's own setting is looked up once and named.
-    expect(server.requests.map((r) => r.method)).toEqual(['initialize', 'thread/resume', 'model/list', 'config/read', 'turn/start', 'turn/start'])
+    expect(server.requests.map((r) => r.method)).toEqual(['initialize', 'config/read', 'thread/resume', 'model/list', 'turn/start', 'turn/start'])
     expect(server.requests[4]!.params).toMatchObject({ effort: 'medium' }) // gpt-6-luna has no xhigh: its own default
-    expect(server.requests[1]!.params).toMatchObject({ threadId: 'thread-1', model: 'gpt-6-luna', excludeTurns: true })
+    expect(server.requests[2]!.params).toMatchObject({ threadId: 'thread-1', model: 'gpt-6-luna', excludeTurns: true })
   })
 
   it('reports thinking, searching and tool use as they start', async () => {
@@ -327,7 +329,7 @@ describe('Codex in a coding conversation', () => {
     const reading = read.adapter.run(request({ cwd: '/work/app', access: 'read' }).req)
     await flush()
     await flush()
-    expect(read.server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly' } })
+    expect(read.server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' } })
     read.server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
     await reading
   })
@@ -383,5 +385,50 @@ describe('Codex in a coding conversation', () => {
     await done
     await expect(server.onServerRequest('item/commandExecution/requestApproval', { threadId: 'thread-1', itemId: 'x' })).rejects.toThrow()
   })
+})
+
+describe('Codex with connectors (Notion, …)', () => {
+  async function turn(answer: 'allow' | 'deny' = 'allow') {
+    const { server, adapter } = setup()
+    server.mcpServers = { notion: { url: 'https://mcp.notion.com/mcp' } }
+    const asked: ApprovalRequest[] = []
+    const tools: ToolLogEntry[] = []
+    const { req } = request({
+      onTool: (tool) => tools.push(tool),
+      requestApproval: async (ask) => {
+        asked.push(ask)
+        return answer
+      },
+    })
+    const done = adapter.run(req)
+    await flush()
+    await flush()
+    const elicit = (tool: string, readOnly: boolean) =>
+      server.onServerRequest('mcpServer/elicitation/request', {
+        threadId: 'thread-1',
+        serverName: 'notion',
+        _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: tool, tool_title: tool, tool_annotations: { readOnlyHint: readOnly }, tool_params: { title: '応募先' } },
+      })
+    return { server, asked, tools, done, elicit }
+  }
+
+  it('sets every connector to ask first', async () => {
+    const { server, done } = await turn()
+    expect(server.requests.find((r) => r.method === 'thread/start')!.params.config).toEqual({ 'mcp_servers.notion.default_tools_approval_mode': 'prompt' })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
+
+  it('lets reads through, asks before the rest, and logs the calls', async () => {
+    const { server, asked, tools, done, elicit } = await turn('allow')
+    await expect(elicit('notion-search', true)).resolves.toEqual({ action: 'accept', content: {} })
+    await expect(elicit('notion-create-pages', false)).resolves.toEqual({ action: 'accept', content: {} })
+    expect(asked).toEqual([{ kind: 'other', title: 'notion を操作: notion-create-pages', detail: '{\n  "title": "応募先"\n}' }])
+    server.push('item/started', { turnId: 'turn-1', item: { type: 'mcpToolCall', id: 'm1', server: 'notion', tool: 'notion-search', status: 'inProgress' } })
+    expect(tools).toEqual([{ id: 'm1', kind: 'search', title: 'notion: notion-search', status: 'running' }])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
+
 })
 

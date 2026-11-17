@@ -181,3 +181,42 @@ export function CrossIcon(props: IconProps) {
     </Icon>
   )
 }
+
+/** Two links: connectors such as Notion. */
+export function LinkIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" />
+      <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" />
+    </Icon>
+  )
+}
+
+/** A gauge: usage. */
+export function MeterIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 17a8 8 0 1 1 16 0" />
+      <path d="m12 17 4-6" />
+    </Icon>
+  )
+}
+
+/** A push pin: pinned conversations. */
+export function PinIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
+      <path d="M12 14v6" />
+    </Icon>
+  )
+}
+
+/** A speech bubble: chats. */
+export function ChatIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
+    </Icon>
+  )
+}

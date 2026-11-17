@@ -100,6 +100,23 @@ describe('ChatManager', () => {
     expect(read(id).title).toBe('設計相談')
   })
 
+  it('pins a conversation, keeps that after a restart, and unpins it', async () => {
+    const first = setup()
+    const id = first.manager.create()
+    first.manager.send(id, { text: 'DB は？', to: 'claude' })
+    first.claude.reply('SQLite')
+    await settle()
+    first.manager.pin(id, true)
+    await settle()
+    expect(first.manager.list()[0]!.pinned).toBe(true)
+    expect(first.read(id).pinned).toBe(true)
+    const again = setup(first.directory)
+    expect(again.manager.list().find((c) => c.id === id)!.pinned).toBe(true)
+    again.manager.pin(id, false)
+    await settle()
+    expect(again.read(id).pinned).toBe(false)
+  })
+
   it('deletes a conversation, stopping its reply and ignoring anything it says afterwards', async () => {
     const { manager, claude, file, events } = setup()
     const id = manager.create()

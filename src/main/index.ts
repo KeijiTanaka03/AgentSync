@@ -3,11 +3,12 @@ import { execFile } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { AgentId, MenuCommand } from '../shared/types'
+import type { AgentId, CliId, ConnectionList, MenuCommand, UsageReport } from '../shared/types'
 import {
   parseAgentId,
   parseApproval,
   parseApprovalMode,
+  parseRoles,
   parseConversationId,
   parseEffort,
   parseModel,
@@ -19,6 +20,15 @@ import { CodexAdapter } from './agents/codex'
 import { StdioRpcConnection } from './agents/jsonRpc'
 import { ChatManager } from './chat/manager'
 import type { GitDiff } from './chat/orchestrator'
+import {
+  addConnection,
+  claudeUsage,
+  codexUsageWindows,
+  listClaudeConnections,
+  listCodexConnections,
+  removeConnection,
+  startCodexLogin,
+} from './integrations'
 import { childEnv, findExecutable, loadLoginShellPath } from './env'
 import { ConversationStore } from './store/conversationStore'
 import { SettingsStore, type CliName } from './store/settingsStore'
@@ -40,6 +50,8 @@ let mainWindow: BrowserWindow | null = null
 let manager: ChatManager | null = null
 let settings: SettingsStore | null = null
 let codexAdapter: CodexAdapter | null = null
+/** The empty folder chats run in (also where the CLIs are asked about usage and connectors). */
+let chatFolder: string | null = null
 
 const CLI_LABELS: Record<CliName, string> = { claude: 'Claude Code CLI', codex: 'Codex CLI' }
 
@@ -181,6 +193,62 @@ async function gitDiff(dir: string): Promise<GitDiff | null> {
   return { text, files, added, removed }
 }
 
+const failure = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+async function readUsage(): Promise<Record<AgentId, UsageReport>> {
+  const cwd = chatFolder ?? app.getPath('userData')
+  const [claude, gpt] = await Promise.all([
+    requireExecutable('claude').then(
+      (binary) => claudeUsage(binary, childEnv(), cwd),
+      (error: unknown) => ({ windows: [], error: failure(error) }),
+    ),
+    (async (): Promise<UsageReport> => {
+      try {
+        const windows = codexUsageWindows((await codexAdapter!.rateLimits()) as Parameters<typeof codexUsageWindows>[0])
+        return { windows, error: windows.length > 0 ? null : '使用量を読み取れませんでした' }
+      } catch (error) {
+        return { windows: [], error: failure(error) }
+      }
+    })(),
+  ])
+  return { claude, gpt }
+}
+
+async function readConnections(): Promise<Record<CliId, ConnectionList>> {
+  const cwd = chatFolder ?? app.getPath('userData')
+  const read = async (cli: CliId): Promise<ConnectionList> => {
+    try {
+      const binary = await requireExecutable(cli)
+      const connections = cli === 'claude' ? await listClaudeConnections(binary, childEnv(), cwd) : await listCodexConnections(binary, childEnv(), cwd)
+      return { connections, error: null }
+    } catch (error) {
+      return { connections: [], error: failure(error) }
+    }
+  }
+  const [claude, codex] = await Promise.all([read('claude'), read('codex')])
+  return { claude, codex }
+}
+
+function parseCli(raw: unknown): CliId {
+  if (raw !== 'claude' && raw !== 'codex') throw new Error('CLI の指定が不正です')
+  return raw
+}
+
+function parseConnectionName(raw: unknown): string {
+  if (typeof raw !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/.test(raw)) throw new Error('連携の名前は英数字と _ . - で書いてください')
+  return raw
+}
+
+function parseConnectionUrl(raw: unknown): string {
+  try {
+    const url = new URL(String(raw))
+    if (url.protocol === 'https:' || url.protocol === 'http:') return url.toString()
+  } catch {
+    // fall through
+  }
+  throw new Error('URL は https:// から始めてください')
+}
+
 /** Asks for the project folder of a new coding conversation. */
 async function chooseProjectFolder(window: BrowserWindow): Promise<string | null> {
   // For automated checks: a folder given up front instead of the dialog.
@@ -220,6 +288,7 @@ function createManager(): ChatManager {
   const dataDirectory = app.getPath('userData')
   const chatDirectory = path.join(dataDirectory, 'chat-workdir')
   mkdirSync(chatDirectory, { recursive: true })
+  chatFolder = chatDirectory
 
   // Models, efforts and CLI locations chosen in the app. The last model and effort chosen for each AI
   // carry over to new conversations.
@@ -344,6 +413,8 @@ function buildMenu(): Menu {
       submenu: [
         { role: 'about', label: `${name} について` },
         { type: 'separator' },
+        { label: '連携の管理…', click: () => sendMenuCommand('connections') },
+        { label: '使用量…', click: () => sendMenuCommand('usage') },
         { label: 'CLI の場所…', click: () => void showCliLocations() },
         { type: 'separator' },
         { role: 'services', label: 'サービス' },
@@ -426,6 +497,10 @@ function registerIpc(): void {
   ipcMain.handle('conversations:rename', (event, id: unknown, title: unknown) => {
     fromMainWindow(event).rename(parseConversationId(id), parseTitle(title))
   })
+  ipcMain.handle('conversations:pin', (event, id: unknown, pinned: unknown) => {
+    if (typeof pinned !== 'boolean') throw new Error('pinned must be a boolean')
+    fromMainWindow(event).pin(parseConversationId(id), pinned)
+  })
   ipcMain.handle('conversations:delete', async (event, raw: unknown) => {
     const chat = fromMainWindow(event)
     const id = parseConversationId(raw)
@@ -449,6 +524,55 @@ function registerIpc(): void {
   ipcMain.handle('chat:approve', (event, id: unknown, approvalId: unknown, decision: unknown) => {
     const answer = parseApproval(approvalId, decision)
     fromMainWindow(event).approve(parseConversationId(id), answer.id, answer.decision)
+  })
+  ipcMain.handle('usage:read', (event) => {
+    fromMainWindow(event)
+    return readUsage()
+  })
+  ipcMain.handle('connections:list', (event) => {
+    fromMainWindow(event)
+    return readConnections()
+  })
+  ipcMain.handle('connections:add', async (event, cli: unknown, name: unknown, url: unknown) => {
+    fromMainWindow(event)
+    const which = parseCli(cli)
+    await addConnection(which, await requireExecutable(which), childEnv(), chatFolder ?? app.getPath('userData'), parseConnectionName(name), parseConnectionUrl(url))
+    if (which === 'codex') codexAdapter?.dispose() // the next reply starts Codex with the new connector
+  })
+  ipcMain.handle('connections:remove', async (event, cli: unknown, name: unknown) => {
+    fromMainWindow(event)
+    const which = parseCli(cli)
+    const connection = parseConnectionName(name)
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const label = which === 'claude' ? 'Claude Code' : 'Codex'
+    const { response } = await dialog.showMessageBox(window ?? showWindow(), {
+      type: 'warning',
+      message: `${label} の連携「${connection}」を削除しますか？`,
+      detail: `${label} の設定から取り除きます（AgentSync の外で ${which} を使うときも、なくなります）。`,
+      buttons: ['削除', 'キャンセル'],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    if (response !== 0) return false
+    await removeConnection(await requireExecutable(which), childEnv(), chatFolder ?? app.getPath('userData'), connection)
+    if (which === 'codex') codexAdapter?.dispose()
+    return true
+  })
+  ipcMain.handle('connections:login', async (event, cli: unknown, name: unknown) => {
+    fromMainWindow(event)
+    const which = parseCli(cli)
+    const connection = parseConnectionName(name)
+    if (which === 'claude') {
+      return 'Claude Code の連携へのログインは、ターミナルで claude を起動して /mcp から行ってください（claude.ai の連携は claude.ai の設定で管理します）。'
+    }
+    startCodexLogin(await requireExecutable('codex'), childEnv(), chatFolder ?? app.getPath('userData'), connection, (ok) => {
+      if (ok) codexAdapter?.dispose()
+      broadcast('connections:changed', null)
+    })
+    return 'ブラウザが開いたら、ログインして許可してください。終わったら「更新」を押してください。'
+  })
+  ipcMain.handle('chat:roles', (event, id: unknown, roles: unknown) => {
+    fromMainWindow(event).setRoles(parseConversationId(id), parseRoles(roles))
   })
   ipcMain.handle('chat:approval-mode', (event, id: unknown, mode: unknown) => {
     fromMainWindow(event).setApprovalMode(parseConversationId(id), parseApprovalMode(mode))

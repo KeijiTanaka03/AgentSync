@@ -1,18 +1,24 @@
 import { useState } from 'react'
-import type { ConversationSummary } from '../../../shared/types'
-import { BrandMark, CodeIcon, FolderIcon, LoopIcon, MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
+import type { ConversationKind, ConversationSummary } from '../../../shared/types'
+import { BrandMark, ChatIcon, CodeIcon, FolderIcon, LinkIcon, LoopIcon, MeterIcon, MoreIcon, PencilIcon, PinIcon, PlusIcon, TrashIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
 
 interface SidebarProps {
   conversations: ConversationSummary[]
   activeId: string | null
+  /** The list shown: chats or coding conversations. */
+  mode: ConversationKind
+  onMode(mode: ConversationKind): void
   onSelect(id: string): void
   onCreate(): void
   /** Asks for a project folder and opens a coding conversation there. */
   onCreateCode(): void
   onRename(id: string, title: string): void
+  onPin(id: string, pinned: boolean): void
   onDelete(id: string): void
+  onConnections(): void
+  onUsage(): void
 }
 
 /** The open 「…」 menu: which conversation, and where (window coordinates). */
@@ -25,6 +31,7 @@ interface MenuState {
 }
 
 const GROUPS = ['今日', '昨日', '過去 7 日間', 'それ以前'] as const
+const PINNED = 'ピン留め'
 
 function groupOf(iso: string, now: Date): (typeof GROUPS)[number] {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
@@ -36,14 +43,19 @@ function groupOf(iso: string, now: Date): (typeof GROUPS)[number] {
   return 'それ以前'
 }
 
-export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateCode, onRename, onDelete }: SidebarProps) {
+export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, onCreate, onCreateCode, onRename, onPin, onDelete, onConnections, onUsage }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
+  const conversations = all.filter((c) => c.kind === mode)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const now = new Date()
-  const grouped = GROUPS.map((label) => ({
-    label,
-    items: conversations.filter((c) => groupOf(c.updatedAt, now) === label),
-  })).filter((group) => group.items.length > 0)
+  const grouped = [
+    { label: PINNED, items: conversations.filter((c) => c.pinned) },
+    ...GROUPS.map((label) => ({
+      label,
+      items: conversations.filter((c) => !c.pinned && groupOf(c.updatedAt, now) === label),
+    })),
+  ].filter((group) => group.items.length > 0)
+  const menuPinned = conversations.find((c) => c.id === menu?.id)?.pinned ?? false
 
   const toggleMenu = (id: string, button: HTMLElement) => {
     if (menu?.id === id) {
@@ -60,20 +72,35 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateC
         <BrandMark />
         AgentSync
       </div>
-      <button type="button" className="new-conversation" onClick={onCreate}>
-        <PlusIcon />
-        新しい会話
-        <kbd>⌘N</kbd>
-      </button>
-      <button type="button" className="new-code-conversation" onClick={onCreateCode}>
-        <FolderIcon />
-        コーディング会話…
-        <kbd>⇧⌘N</kbd>
-      </button>
+      <div className="mode-switch" role="tablist" aria-label="会話の種類">
+        {(['chat', 'code'] as const).map((kind) => (
+          <button key={kind} type="button" role="tab" aria-selected={mode === kind} onClick={() => onMode(kind)}>
+            {kind === 'chat' ? <ChatIcon size={15} /> : <CodeIcon size={15} />}
+            {kind === 'chat' ? 'チャット' : 'コード'}
+          </button>
+        ))}
+      </div>
+      {mode === 'chat' ? (
+        <button type="button" className="new-conversation" onClick={onCreate}>
+          <PlusIcon />
+          新しい会話
+          <kbd>⌘N</kbd>
+        </button>
+      ) : (
+        <button type="button" className="new-conversation" onClick={onCreateCode}>
+          <FolderIcon />
+          新しい会話…
+          <kbd>⇧⌘N</kbd>
+        </button>
+      )}
       <div className="conversations">
+        {conversations.length === 0 && <p className="conversations-empty">{mode === 'code' ? 'コーディング会話はまだありません' : '会話はまだありません'}</p>}
         {grouped.map((group) => (
           <section key={group.label} className="conversation-group" aria-label={group.label}>
-            <h2>{group.label}</h2>
+            <h2>
+              {group.label === PINNED && <PinIcon size={12} className="group-pin" />}
+              {group.label}
+            </h2>
             <ul>
               {group.items.map((conversation) => {
                 const { id, title } = conversation
@@ -107,7 +134,6 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateC
                           onClick={() => onSelect(id)}
                           onDoubleClick={() => setEditingId(id)}
                         >
-                          {conversation.kind === 'code' && <CodeIcon size={13} className="conversation-kind" />}
                           <span className="conversation-title">{title}</span>
                           {conversation.dialogue || conversation.review ? (
                             <span
@@ -126,7 +152,7 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateC
                           type="button"
                           className="conversation-more"
                           aria-label={`「${title}」のメニュー`}
-                          title="名前の変更・削除"
+                          title="ピン留め・名前の変更・削除"
                           aria-haspopup="menu"
                           aria-expanded={menu?.id === id}
                           // Keep the open menu's 「click elsewhere」 handling from closing it first; this button toggles it.
@@ -144,6 +170,16 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateC
           </section>
         ))}
       </div>
+      <div className="sidebar-footer">
+        <button type="button" onClick={onConnections}>
+          <LinkIcon size={15} />
+          連携
+        </button>
+        <button type="button" onClick={onUsage}>
+          <MeterIcon size={15} />
+          使用量
+        </button>
+      </div>
       {menu && (
         <PopupMenu
           key={`${menu.id}:${menu.x}:${menu.y}`}
@@ -155,6 +191,18 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateC
             if (restoreFocus) menu.trigger?.focus()
           }}
         >
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              setMenu(null)
+              onPin(menu.id, !menuPinned)
+            }}
+          >
+            <PinIcon />
+            {menuPinned ? 'ピン留めを外す' : 'ピン留め'}
+          </button>
           <button
             type="button"
             role="menuitem"

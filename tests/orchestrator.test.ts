@@ -259,6 +259,7 @@ describe('Orchestrator', () => {
       initial: {
         title: '前の会話',
         approvalMode: 'ask',
+        roles: 'single',
         messages: [],
         participants: {
           claude: { model: null, effort: 'max', sessionId: null, delivered: [] },
@@ -274,6 +275,7 @@ describe('Orchestrator', () => {
     const { messages } = setup({
       title: '途中',
       approvalMode: 'ask',
+      roles: 'single',
       messages: [{ id: 1, from: 'claude', to: 'user', text: '途中まで', at: '2026-11-16T05:00:00.000Z', status: 'streaming' }],
       participants: {
         claude: { model: 'haiku', effort: null, sessionId: 's1', delivered: [] },
@@ -415,6 +417,7 @@ describe('Orchestrator dialogue mode', () => {
     const { orchestrator, messages } = setup({
       title: 't',
       approvalMode: 'ask',
+      roles: 'single',
       messages: [{ id: 1, from: 'user', to: 'gpt', text: 'GPT から話して', at: '2026-11-17T05:00:00.000Z', status: 'done' }],
       participants: {
         claude: { model: null, effort: null, sessionId: null, delivered: [] },
@@ -430,6 +433,7 @@ describe('Orchestrator dialogue mode', () => {
     const { messages } = setup({
       title: 't',
       approvalMode: 'ask',
+      roles: 'single',
       messages: [
         { id: 1, from: 'user', to: 'all', text: 'お題', at: '2026-11-17T05:00:00.000Z', status: 'done' },
         { id: 2, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at: '2026-11-17T05:00:01.000Z', status: 'done', notice: 'dialogue-start' },
@@ -691,3 +695,26 @@ describe('Orchestrator 実装＋レビュー', () => {
   })
 })
 
+describe('Orchestrator with an implementer chosen', () => {
+  it('starts nothing when the roles are chosen, and a 実装＋レビュー when the next request is sent', async () => {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({ adapters: { claude, gpt }, cwd: '/tmp/c', workdir: '/work/app', emit: () => {} })
+    orchestrator.setRoles('gpt')
+    await flush()
+    expect(orchestrator.snapshot().state.review).toBeNull()
+    expect(claude.calls).toHaveLength(0)
+    expect(gpt.calls).toHaveLength(0)
+    orchestrator.send({ text: 'README を直して', to: 'all' })
+    await flush()
+    const { state } = orchestrator.snapshot()
+    expect(state.review).toMatchObject({ implementer: 'gpt', reviewer: 'claude', round: 1, phase: 'implement' })
+    expect(state.messages.slice(0, 2).map((m) => [m.from, m.notice ?? m.text])).toEqual([
+      ['user', 'README を直して'],
+      ['system', 'review-start'],
+    ])
+    expect(gpt.calls).toHaveLength(1)
+    expect(gpt.calls[0]!.access).toBe('write')
+    expect(claude.calls).toHaveLength(0)
+  })
+})

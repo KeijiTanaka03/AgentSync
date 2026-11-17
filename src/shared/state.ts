@@ -43,6 +43,6 @@ export function applyEvent(state: ChatState, event: ChatEvent): ChatState {
         messages: state.messages.map((m) => (m.id === event.id ? { ...m, approvals: upsert(m.approvals, event.approval) } : m)),
       }
     case 'workspace:update':
-      return { ...state, workspace: event.workspace, approvalMode: event.approvalMode }
+      return { ...state, workspace: event.workspace, approvalMode: event.approvalMode, roles: event.roles }
   }
 }

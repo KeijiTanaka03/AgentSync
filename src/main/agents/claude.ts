@@ -3,7 +3,7 @@ import readline from 'node:readline'
 import path from 'node:path'
 import type { AgentChoices } from '../../shared/types'
 import type { AgentAdapter, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
-import { ClaudeStreamParser, describeClaudeTool } from './claudeStream'
+import { ClaudeStreamParser, describeClaudeTool, isReadOnlyTool, mcpTool } from './claudeStream'
 
 export interface ClaudeAdapterOptions {
   /** Resolves the `claude` executable. */
@@ -49,8 +49,10 @@ const STDERR_LIMIT = 8_000
 /** The levels `claude --effort` accepts (Claude Code 2.1). Claude Code does not report which one it uses by default. */
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-/** Tools for `read` access: reading and searching files in the project. */
-const READ_TOOLS = 'Read,Glob,Grep'
+/** Tools for `read` access: reading and searching the project, and the web. */
+const READ_TOOLS = 'Read,Glob,Grep,WebSearch,WebFetch'
+/** Built-in tools that only read the web; they go ahead without asking. */
+const WEB_TOOLS = new Set(['WebSearch', 'WebFetch'])
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const MAX_DETAIL = 4_000
 
@@ -96,30 +98,13 @@ export class ClaudeAdapter implements AgentAdapter {
   constructor(private readonly options: ClaudeAdapterOptions) {}
 
   static buildArgs(request: Pick<AgentRunRequest, 'systemPrompt' | 'model' | 'effort' | 'sessionId' | 'access' | 'approval'>): string[] {
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--strict-mcp-config']
-    if (request.access === 'chat') {
-      // Talk only: no tools, and our own system prompt instead of Claude Code's.
-      args.push('--tools', '', '--system-prompt', request.systemPrompt)
-    } else {
-      // Work as Claude Code usually does, with the group chat explained on top.
-      args.push('--append-system-prompt', request.systemPrompt)
-      if (request.access === 'read') {
-        // Reading only; anything that would need permission is refused.
-        args.push('--tools', READ_TOOLS, '--permission-prompts', 'none')
-      } else {
-        // Permission requests come to us over stdin/stdout (stream-json), to be shown as approval cards.
-        args.push(
-          '--input-format',
-          'stream-json',
-          '--permission-mode',
-          request.approval === 'auto' ? 'auto' : 'manual',
-          '--permission-prompts',
-          'host',
-          '--permission-prompt-tool',
-          'stdio',
-        )
-      }
-    }
+    // Claude Code as it usually is (its own instructions, tools and connectors), with the group chat explained
+    // on top. Whatever needs permission comes to us over stdin/stdout (stream-json), to be shown as a card.
+    const mode = request.access === 'write' && request.approval === 'auto' ? 'auto' : 'manual'
+    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--append-system-prompt', request.systemPrompt]
+    // A read-only turn of a coding conversation: reading the project and the web, and the connectors.
+    if (request.access === 'read') args.push('--tools', READ_TOOLS)
+    args.push('--input-format', 'stream-json', '--permission-mode', mode, '--permission-prompts', 'host', '--permission-prompt-tool', 'stdio')
     if (request.model) args.push('--model', request.model)
     if (request.effort) args.push('--effort', request.effort)
     if (request.sessionId) args.push('--resume', request.sessionId)
@@ -138,7 +123,6 @@ export class ClaudeAdapter implements AgentAdapter {
       })
       this.children.add(child)
 
-      const interactive = request.access === 'write'
       const parser = new ClaudeStreamParser(request.access === 'chat' ? null : request.cwd)
       const send = (message: unknown) => {
         if (!child.stdin.writableEnded) child.stdin.write(`${JSON.stringify(message)}\n`)
@@ -147,7 +131,22 @@ export class ClaudeAdapter implements AgentAdapter {
         let response: Json
         if (body.subtype === 'can_use_tool' && typeof body.tool_name === 'string') {
           const input = (typeof body.input === 'object' && body.input !== null ? body.input : {}) as Json
-          if (writesOutside(body.tool_name, input, request.cwd)) {
+          const connector = mcpTool(body.tool_name)
+          if (connector) {
+            // A connector: reading goes ahead, anything else is the user's call.
+            const allowed =
+              isReadOnlyTool(connector.tool) ||
+              (await request.requestApproval({
+                kind: 'other',
+                title: `${connector.server} を操作: ${connector.tool}`,
+                detail: clip(JSON.stringify(input, null, 2)),
+              })) === 'allow'
+            response = allowed ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'ユーザーが許可しませんでした。' }
+          } else if (WEB_TOOLS.has(body.tool_name)) {
+            response = { behavior: 'allow', updatedInput: input }
+          } else if (request.access === 'read') {
+            response = { behavior: 'deny', message: 'このターンは読み取り専用です。' }
+          } else if (request.access === 'write' && writesOutside(body.tool_name, input, request.cwd)) {
             response = { behavior: 'deny', message: '作業フォルダの外には書き込めません。' }
           } else {
             const decision = await request.requestApproval(describePermission(body.tool_name, input, request.cwd))
@@ -183,7 +182,7 @@ export class ClaudeAdapter implements AgentAdapter {
           else {
             outcome = event.ok ? { ok: true, text: event.text } : { ok: false, error: event.error }
             // With stream-json input the process waits for more; the turn is over.
-            if (interactive) child.stdin.end()
+            child.stdin.end()
           }
         }
       })
@@ -210,8 +209,7 @@ export class ClaudeAdapter implements AgentAdapter {
       child.stdin.on('error', () => {
         // The process may exit before reading stdin; the close handler reports why.
       })
-      if (interactive) send({ type: 'user', message: { role: 'user', content: request.prompt } })
-      else child.stdin.end(request.prompt)
+      send({ type: 'user', message: { role: 'user', content: request.prompt } })
     })
   }
 

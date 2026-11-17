@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AGENT_IDS, DISPLAY_NAMES, otherAgent, type AgentId, type ApprovalMode, type SendTarget } from '../../../shared/types'
+import { AGENT_IDS, DISPLAY_NAMES, isAgentId, otherAgent, type ApprovalMode, type Roles, type SendTarget } from '../../../shared/types'
 import { parseLeadingMention } from '../../../shared/validate'
-import { CodeIcon, LoopIcon } from './icons'
+import { CheckIcon, CodeIcon, LoopIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 
 const TARGETS: { id: SendTarget; label: string }[] = [
@@ -26,11 +26,12 @@ interface ComposerProps {
   onApprovalMode?(mode: ApprovalMode): void
   /** Coding conversations: 実装＋レビュー is running. */
   reviewing?: boolean
-  canStartReview?: boolean
-  /** Starts 実装＋レビュー with this implementer (with the request typed in, if any), or stops it with null. */
-  onReview?(implementer: AgentId | null, task?: string): void
+  onStopReview?(): void
   /** What you sent before, oldest first: ↑ / ↓ go through it. */
   history?: string[]
+  /** Coding: who may change the project. Choosing an implementer makes the next request a 実装＋レビュー. */
+  roles?: Roles
+  onRoles?(roles: Roles): void
 }
 
 export function Composer({
@@ -43,10 +44,12 @@ export function Composer({
   approvalMode,
   onApprovalMode,
   reviewing = false,
-  canStartReview = false,
-  onReview,
+  onStopReview,
   history = [],
+  roles = 'single',
+  onRoles,
 }: ComposerProps) {
+  const implementer = isAgentId(roles) ? roles : null
   const [to, setTo] = useState<SendTarget>('all')
   // ↑ / ↓: which earlier message is shown (null: your own draft), and the draft kept meanwhile.
   const [recalled, setRecalled] = useState<number | null>(null)
@@ -163,21 +166,22 @@ export function Composer({
               </button>
             </div>
           )}
-          {onReview && (
+          {onRoles && (
             <button
               type="button"
               className="dialogue-toggle"
-              aria-pressed={reviewing}
+              aria-pressed={reviewing || roles !== 'single'}
               aria-haspopup={reviewing ? undefined : 'menu'}
-              disabled={!reviewing && ((!canStartReview && !text.trim()) || dialogue)}
               title={
                 reviewing
                   ? 'もう一度押すと実装＋レビューを止めます'
-                  : '入力欄の依頼（空なら直前の依頼）を、片方が実装し、もう片方がレビューします'
+                  : implementer
+                    ? `依頼を送ると、${DISPLAY_NAMES[implementer]} が実装し、${DISPLAY_NAMES[otherAgent(implementer)]} がレビューします。押すと役割を選び直せます`
+                    : '役割を選びます: 片方が実装し、もう片方がレビュー'
               }
               onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => {
-                if (reviewing) onReview(null)
+                if (reviewing) onStopReview?.()
                 else if (reviewMenu) setReviewMenu(null)
                 else {
                   const rect = event.currentTarget.getBoundingClientRect()
@@ -186,7 +190,11 @@ export function Composer({
               }}
             >
               <CodeIcon size={15} />
-              実装＋レビュー{reviewing ? ' ON' : ''}
+              {reviewing
+                ? '実装＋レビュー ON'
+                : implementer
+                  ? `${DISPLAY_NAMES[implementer]} が実装 → ${DISPLAY_NAMES[otherAgent(implementer)]} がレビュー`
+                  : '実装＋レビュー'}
             </button>
           )}
           <button
@@ -225,7 +233,13 @@ export function Composer({
           ref={box}
           rows={1}
           value={text}
-          placeholder={dialogue ? '割り込んで発言…（対話は止めずに次の話者へ渡します）' : 'メッセージを入力…（Enter で送信、Shift+Enter で改行）'}
+          placeholder={
+            dialogue
+              ? '割り込んで発言…（対話は止めずに次の話者へ渡します）'
+              : implementer && !reviewing
+                ? `依頼を入力…（送ると ${DISPLAY_NAMES[implementer]} が実装し、${DISPLAY_NAMES[otherAgent(implementer)]} がレビューします）`
+                : 'メッセージを入力…（Enter で送信、Shift+Enter で改行）'
+          }
           onChange={(event) => {
             setText(event.target.value)
             setRecalled(null)
@@ -239,7 +253,7 @@ export function Composer({
           </svg>
         </button>
       </div>
-      {reviewMenu && onReview && (
+      {reviewMenu && onRoles && (
         <PopupMenu
           x={reviewMenu.x}
           y={reviewMenu.y}
@@ -251,29 +265,28 @@ export function Composer({
             if (restoreFocus) reviewMenu.trigger.focus()
           }}
         >
-          <div className="menu-heading">{text.trim() ? '入力欄の依頼' : '直前の依頼'}を、だれが実装しますか</div>
-          {AGENT_IDS.map((implementer) => (
+          <div className="menu-heading">役割</div>
+          {AGENT_IDS.map((choice) => (
             <button
-              key={implementer}
+              key={choice}
               type="button"
-              role="menuitem"
+              role="menuitemradio"
+              aria-checked={roles === choice}
               className="menu-item"
               onClick={() => {
                 setReviewMenu(null)
-                const task = text.trim()
-                onReview(implementer, task || undefined)
-                if (task) {
-                  setText('')
-                  requestAnimationFrame(resize)
-                }
+                onRoles(roles === choice ? 'single' : choice)
               }}
             >
+              <CheckIcon className="menu-check" />
               <span className="menu-label">
-                {DISPLAY_NAMES[implementer]} が実装 → {DISPLAY_NAMES[otherAgent(implementer)]} がレビュー
+                {DISPLAY_NAMES[choice]} が実装 → {DISPLAY_NAMES[otherAgent(choice)]} がレビュー
               </span>
             </button>
           ))}
-          <p className="menu-note">レビュー役が APPROVED と返すか、3 往復で止まります。実装役だけがファイルを変更できます。</p>
+          <p className="menu-note">
+            実装役を選ぶと、次に送る依頼から実装＋レビューが始まります（レビュー役が APPROVED と返すか 3 往復で終了）。同じ役割をもう一度選ぶと解除です。
+          </p>
         </PopupMenu>
       )}
     </form>

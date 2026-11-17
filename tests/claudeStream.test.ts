@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ClaudeAdapter, describePermission, parseModelList, writesOutside } from '../src/main/agents/claude'
-import { ClaudeStreamParser } from '../src/main/agents/claudeStream'
+import { ClaudeStreamParser, describeClaudeTool, isReadOnlyTool } from '../src/main/agents/claudeStream'
 import type { AgentRunRequest, ApprovalRequest } from '../src/main/agents/types'
 import type { ToolLogEntry } from '../src/shared/types'
 
@@ -88,7 +88,7 @@ describe('ClaudeStreamParser', () => {
 })
 
 describe('ClaudeAdapter.buildArgs', () => {
-  it('disables tools and MCP servers and resumes the session when there is one', () => {
+  it('runs Claude Code as it is, with the group chat on top and permission requests sent to us', () => {
     const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: 'haiku', effort: 'low', sessionId: 'sess-1', access: 'chat', approval: 'ask' })
     expect(args).toEqual([
       '-p',
@@ -96,11 +96,16 @@ describe('ClaudeAdapter.buildArgs', () => {
       'stream-json',
       '--verbose',
       '--include-partial-messages',
-      '--strict-mcp-config',
-      '--tools',
-      '',
-      '--system-prompt',
+      '--append-system-prompt',
       'SYS',
+      '--input-format',
+      'stream-json',
+      '--permission-mode',
+      'manual',
+      '--permission-prompts',
+      'host',
+      '--permission-prompt-tool',
+      'stdio',
       '--model',
       'haiku',
       '--effort',
@@ -108,6 +113,9 @@ describe('ClaudeAdapter.buildArgs', () => {
       '--resume',
       'sess-1',
     ])
+    // Nothing of Claude Code is cut off: no tool list, no MCP restriction.
+    expect(args).not.toContain('--tools')
+    expect(args).not.toContain('--strict-mcp-config')
   })
 
   it('leaves out model, effort and resume when not set', () => {
@@ -168,13 +176,15 @@ describe('Claude in a coding conversation', () => {
 
   it('works as Claude Code does, reading only or asking us before changes', () => {
     const read = ClaudeAdapter.buildArgs({ ...base, access: 'read', approval: 'ask' })
-    expect(read).toEqual(expect.arrayContaining(['--append-system-prompt', 'SYS', '--tools', 'Read,Glob,Grep', '--permission-prompts', 'none']))
+    expect(read).toEqual(expect.arrayContaining(['--append-system-prompt', 'SYS', '--tools', 'Read,Glob,Grep,WebSearch,WebFetch', '--permission-prompts', 'host']))
     expect(read).not.toContain('--system-prompt')
 
     const ask = ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'ask' })
     expect(ask.join(' ')).toContain('--input-format stream-json --permission-mode manual --permission-prompts host --permission-prompt-tool stdio')
     expect(ask).not.toContain('--tools')
     expect(ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'auto' }).join(' ')).toContain('--permission-mode auto')
+    // auto is for changing the project; elsewhere Claude Code asks us as usual.
+    expect(ClaudeAdapter.buildArgs({ ...base, access: 'chat', approval: 'auto' }).join(' ')).toContain('--permission-mode manual')
   })
 
   it('reports each tool call as a step, then finishes it with its result', () => {
@@ -252,3 +262,68 @@ describe('Claude in a coding conversation', () => {
   })
 })
 
+describe('Claude with connectors (Notion, …)', () => {
+  it('names connector steps and tells reading tools apart', () => {
+    expect(describeClaudeTool('mcp__claude_ai_Notion__notion-search', { query: '就活' }, null)).toEqual({ kind: 'search', title: 'Notion: notion-search「就活」' })
+    expect(describeClaudeTool('mcp__claude_ai_Notion__notion-create-pages', {}, null)).toEqual({ kind: 'other', title: 'Notion: notion-create-pages' })
+    for (const tool of ['notion-search', 'notion-fetch', 'notion-get-users', 'notion-query-data-sources', 'notion-list-recent-pages']) expect(isReadOnlyTool(tool)).toBe(true)
+    for (const tool of ['notion-create-pages', 'notion-update-page', 'notion-delete-pages', 'notion-move-pages']) expect(isReadOnlyTool(tool)).toBe(false)
+  })
+
+  it('lets connector reads and web reads through, and asks before anything else', async () => {
+    const folder = mkdtempSync(path.join(tmpdir(), 'agentsync-fake-claude-'))
+    const binary = path.join(folder, 'claude')
+    const ask = (id: string, tool: string) =>
+      JSON.stringify({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: tool, input: { title: '応募先' } } })
+    const steps = ['mcp__claude_ai_Notion__notion-search', 'WebSearch', 'mcp__claude_ai_Notion__notion-create-pages', 'Bash']
+    writeFileSync(
+      binary,
+      [
+        '#!/bin/sh',
+        'read message',
+        'out=""',
+        ...steps.flatMap((tool, i) => [
+          `printf '%s\\n' '${ask(`r${i}`, tool)}'`,
+          'read answer',
+          'case "$answer" in *\'"behavior":"allow"\'*) out="$out+" ;; *) out="$out-" ;; esac',
+        ]),
+        'printf \'{"type":"result","subtype":"success","is_error":false,"result":"%s"}\\n\' "$out"',
+        'read rest',
+      ].join('\n') + '\n',
+    )
+    chmodSync(binary, 0o755)
+    const adapter = new ClaudeAdapter({ resolveBinary: async () => binary, env: () => process.env })
+    const run = (access: 'chat' | 'read', answer: 'allow' | 'deny') => {
+      const asked: ApprovalRequest[] = []
+      const result = adapter.run({
+        prompt: 'Notion に応募先をまとめて',
+        systemPrompt: 'SYS',
+        sessionId: null,
+        cwd: folder,
+        model: null,
+        effort: null,
+        access,
+        approval: 'ask',
+        signal: new AbortController().signal,
+        onSession: () => {},
+        onModel: () => {},
+        onText: () => {},
+        onActivity: () => {},
+        onTool: () => {},
+        requestApproval: async (req) => {
+          asked.push(req)
+          return answer
+        },
+      })
+      return { result, asked }
+    }
+    const chat = run('chat', 'allow')
+    await expect(chat.result).resolves.toEqual({ text: '++++', status: 'done' })
+    expect(chat.asked.map((a) => a.title)).toEqual(['Notion を操作: notion-create-pages', 'コマンドを実行: '])
+    await expect(run('chat', 'deny').result).resolves.toEqual({ text: '++--', status: 'done' })
+    // A read-only turn: the command is refused without asking; the connector change is still the user's call.
+    const read = run('read', 'allow')
+    await expect(read.result).resolves.toEqual({ text: '+++-', status: 'done' })
+    expect(read.asked.map((a) => a.title)).toEqual(['Notion を操作: notion-create-pages'])
+  })
+})

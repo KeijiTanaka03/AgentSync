@@ -12,6 +12,7 @@ function conversation(id: string, updatedAt: string, overrides: Partial<Conversa
     kind: 'chat',
     workdir: null,
     approvalMode: 'ask',
+    roles: 'single',
     createdAt: '2026-11-16T05:00:00.000Z',
     updatedAt,
     participants: {
@@ -42,7 +43,7 @@ describe('ConversationStore', () => {
   it('saves and loads a conversation', () => {
     const data = conversation('a1', '2026-11-16T05:00:01.000Z')
     store.save(data)
-    expect(store.load('a1')).toEqual(data)
+    expect(store.load('a1')).toEqual({ ...data, pinned: false })
     expect(readdirSync(directory)).toEqual(['a1.json']) // no temp file left behind
   })
 

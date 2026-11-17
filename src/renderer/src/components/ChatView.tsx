@@ -9,6 +9,8 @@ import {
   type ChatState,
   type DialogueState,
   type ReviewState,
+ 
+  type Roles,
 } from '../../../shared/types'
 import { errorMessage } from '../errors'
 import { useChat } from '../useChat'
@@ -105,11 +107,14 @@ export function ChatView({ conversationId }: { conversationId: string }) {
           {...(state.kind === 'code'
             ? {
                 reviewing: state.review !== null,
-                canStartReview: state.messages.some((m) => m.from === 'user'),
-                onReview: (implementer: AgentId | null, task?: string) => {
-                  void window.agentsync.setReview(conversationId, implementer, task).catch((error: unknown) => console.error(errorMessage(error)))
+                onStopReview: () => {
+                  void window.agentsync.setReview(conversationId, null).catch((error: unknown) => console.error(errorMessage(error)))
                 },
                 approvalMode: state.approvalMode,
+                roles: state.roles,
+                onRoles: (roles: Roles) => {
+                  void window.agentsync.setRoles(conversationId, roles).catch((error: unknown) => console.error(errorMessage(error)))
+                },
                 onApprovalMode: (mode: ApprovalMode) => {
                   void window.agentsync.setApprovalMode(conversationId, mode).catch((error: unknown) => console.error(errorMessage(error)))
                 },
@@ -161,4 +166,3 @@ function ReviewBar({ review }: { review: ReviewState }) {
     </div>
   )
 }
-

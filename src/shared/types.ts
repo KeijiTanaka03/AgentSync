@@ -3,6 +3,10 @@
 export const AGENT_IDS = ['claude', 'gpt'] as const
 export type AgentId = (typeof AGENT_IDS)[number]
 
+export function isAgentId(value: unknown): value is AgentId {
+  return AGENT_IDS.includes(value as AgentId)
+}
+
 export function otherAgent(id: AgentId): AgentId {
   return id === 'claude' ? 'gpt' : 'claude'
 }
@@ -127,12 +131,21 @@ export interface ReviewState {
   phase: 'implement' | 'review'
 }
 
+/**
+ * Coding conversations: who may change the project.
+ * - `single`: whoever a message is addressed to; read-only when both are asked at once
+ * - an agent: that agent implements each request and the other reviews it (実装＋レビュー)
+ */
+export type Roles = 'single' | AgentId
+
 export interface ChatState {
   title: string
   kind: ConversationKind
   /** Coding conversations only. */
   workspace: Workspace | null
   approvalMode: ApprovalMode
+  /** Coding: who may change the project (see Roles). */
+  roles: Roles
   messages: ChatMessage[]
   agents: Record<AgentId, AgentInfo>
   /** Null when dialogue mode is off. */
@@ -155,7 +168,7 @@ export type ChatEvent =
   | { type: 'message:tool'; id: number; tool: ToolLogEntry }
   /** An approval card was added or answered (matched by `approval.id`). */
   | { type: 'message:approval'; id: number; approval: ApprovalEntry }
-  | { type: 'workspace:update'; workspace: Workspace | null; approvalMode: ApprovalMode }
+  | { type: 'workspace:update'; workspace: Workspace | null; approvalMode: ApprovalMode; roles: Roles }
 
 /** Events carry a sequence number so the renderer can merge them with a snapshot. */
 export interface ChatEventEnvelope {
@@ -186,6 +199,8 @@ export interface ConversationSummary {
   dialogue: boolean
   /** 実装＋レビュー is running. */
   review: boolean
+  /** Kept at the top of the list. */
+  pinned: boolean
   kind: ConversationKind
 }
 
@@ -218,8 +233,40 @@ export interface AgentChoices {
   defaultEffort: string | null
 }
 
+/** One usage limit of a plan (e.g. the 5-hour window). */
+export interface UsageWindow {
+  label: string
+  usedPercent: number
+  /** When it resets, as text for showing (null when unknown). */
+  resets: string | null
+}
+
+export interface UsageReport {
+  windows: UsageWindow[]
+  /** Why it could not be read. */
+  error: string | null
+}
+
+/** The CLIs whose connectors can be managed. */
+export type CliId = 'claude' | 'codex'
+
+/** A connector (MCP server) set up in a CLI. */
+export interface Connection {
+  name: string
+  /** URL or command. */
+  target: string
+  status: 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'unknown'
+  /** Managed in claude.ai's settings rather than in the CLI. */
+  managedAtClaudeAi: boolean
+}
+
+export interface ConnectionList {
+  connections: Connection[]
+  error: string | null
+}
+
 /** Commands sent from the app menu to the renderer. */
-export type MenuCommand = 'new-conversation' | 'new-code-conversation' | 'toggle-dialogue' | 'stop'
+export type MenuCommand = 'new-conversation' | 'new-code-conversation' | 'toggle-dialogue' | 'stop' | 'connections' | 'usage'
 
 /** The API the preload script exposes to the renderer as `window.agentsync`. */
 export interface AgentSyncApi {
@@ -229,6 +276,8 @@ export interface AgentSyncApi {
   /** Asks for a project folder, then returns the ID of a new coding conversation (null when cancelled). */
   createCodeConversation(): Promise<string | null>
   renameConversation(id: string, title: string): Promise<void>
+  /** Pinned conversations stay at the top of the list. */
+  pinConversation(id: string, pinned: boolean): Promise<void>
   /** Asks for confirmation first. Resolves to true when the conversation was deleted. */
   deleteConversation(id: string): Promise<boolean>
   snapshot(conversationId: string): Promise<ChatSnapshot>
@@ -249,6 +298,17 @@ export interface AgentSyncApi {
   /** Answers an approval card. */
   approve(conversationId: string, approvalId: string, decision: ApprovalDecision): Promise<void>
   setApprovalMode(conversationId: string, mode: ApprovalMode): Promise<void>
+  /** Coding: chooses the roles. Nothing starts until a request is sent. */
+  setRoles(conversationId: string, roles: Roles): Promise<void>
+  /** Each plan's usage limits, read from the CLIs without using any. */
+  usage(): Promise<Record<AgentId, UsageReport>>
+  listConnections(): Promise<Record<CliId, ConnectionList>>
+  /** Adds a connector reached over HTTP (`url`). */
+  addConnection(cli: CliId, name: string, url: string): Promise<void>
+  /** Asks for confirmation first. Resolves to true when removed. */
+  removeConnection(cli: CliId, name: string): Promise<boolean>
+  /** Starts signing in to a connector (in the browser). Returns what to tell the user. */
+  loginConnection(cli: CliId, name: string): Promise<string>
   onEvent(listener: (envelope: ConversationEventEnvelope) => void): () => void
   onConversations(listener: (conversations: ConversationSummary[]) => void): () => void
   onMenuCommand(listener: (command: MenuCommand) => void): () => void

@@ -19,6 +19,8 @@ import {
   type ReviewState,
   type SendRequest,
   type Workspace,
+  type Roles,
+  isAgentId,
 } from '../../shared/types'
 import { titleFromMessage } from '../../shared/validate'
 import type { Access, AgentAdapter, ApprovalRequest } from '../agents/types'
@@ -139,6 +141,7 @@ export class Orchestrator {
   private reviewSpeaker: AgentId | null = null
   private workspace: Workspace | null
   private approvalMode: ApprovalMode
+  private roles: Roles
   /** Coding: the agent whose reply may change the project now. Only one at a time. */
   private writer: AgentId | null = null
   private readonly pendingApprovals = new Map<string, PendingApproval>()
@@ -149,8 +152,18 @@ export class Orchestrator {
     this.now = options.now ?? (() => new Date())
     this.title = initial?.title ?? DEFAULT_TITLE
     this.approvalMode = initial?.approvalMode ?? 'ask'
-    this.workspace = options.workdir ? { path: options.workdir, name: path.basename(options.workdir), branch: null } : null
-    this.messages = (initial?.messages ?? []).map((m) => ({ ...m, status: m.status === 'streaming' ? 'stopped' : m.status }))
+    this.roles = initial?.roles ?? 'single'
+    this.workspace = options.workdir
+      ? {
+          path: options.workdir,
+          name: path.basename(options.workdir),
+          branch: null,
+        }
+      : null
+    this.messages = (initial?.messages ?? []).map((m) => ({
+      ...m,
+      status: m.status === 'streaming' ? 'stopped' : m.status,
+    }))
     this.nextMessageId = this.messages.reduce((max, m) => Math.max(max, m.id), 0) + 1
     this.agents = Object.fromEntries(
       AGENT_IDS.map((id) => {
@@ -190,6 +203,7 @@ export class Orchestrator {
         kind: this.workspace ? 'code' : 'chat',
         workspace: this.workspace ? { ...this.workspace } : null,
         approvalMode: this.approvalMode,
+        roles: this.roles,
         messages: this.messages.map((m) => ({ ...m })),
         agents: Object.fromEntries(AGENT_IDS.map((id) => [id, { ...this.agents[id].info }])) as Record<AgentId, AgentInfo>,
         dialogue: this.dialogue ? { ...this.dialogue } : null,
@@ -203,6 +217,7 @@ export class Orchestrator {
     return {
       title: this.title,
       approvalMode: this.approvalMode,
+      roles: this.roles,
       messages: this.messages.map((m) => ({ ...m })),
       participants: Object.fromEntries(
         AGENT_IDS.map((id) => {
@@ -242,6 +257,11 @@ export class Orchestrator {
   send(request: SendRequest): void {
     const text = request.text.trim()
     if (!text) return
+    // With an implementer chosen, a request starts 実装＋レビュー instead of a plain reply.
+    if (this.workspace && !this.dialogue && !this.review && isAgentId(this.roles)) {
+      this.startReview(this.roles, text)
+      return
+    }
     this.addUserMessage(text, request.to)
     if (this.dialogue || this.review) {
       // An interruption: the next speaker gets it with the rest, and the loop goes on.
@@ -257,6 +277,13 @@ export class Orchestrator {
   setApprovalMode(mode: ApprovalMode): void {
     if (mode === this.approvalMode) return
     this.approvalMode = mode
+    this.emitWorkspace()
+  }
+
+  /** Coding: chooses the roles. Choosing an implementer starts nothing by itself: the next request sent starts a review. */
+  setRoles(roles: Roles): void {
+    if (roles === this.roles) return
+    this.roles = roles
     this.emitWorkspace()
   }
 
@@ -423,7 +450,13 @@ export class Orchestrator {
       notice: 'review-start',
       implementer,
     })
-    this.setReviewState({ implementer, reviewer, round: 1, maxRounds: MAX_REVIEW_ROUNDS, phase: 'implement' })
+    this.setReviewState({
+      implementer,
+      reviewer,
+      round: 1,
+      maxRounds: MAX_REVIEW_ROUNDS,
+      phase: 'implement',
+    })
     this.advanceReview()
   }
 
@@ -472,7 +505,11 @@ export class Orchestrator {
     if (kind === 'review') {
       if (isApproved(reply.text)) return this.stopReview('approved')
       if (review.round >= review.maxRounds) return this.stopReview('limit')
-      this.setReviewState({ ...review, round: review.round + 1, phase: 'implement' })
+      this.setReviewState({
+        ...review,
+        round: review.round + 1,
+        phase: 'implement',
+      })
       return
     }
     const workspace = this.workspace
@@ -503,7 +540,10 @@ export class Orchestrator {
 
   private setDialogueState(dialogue: DialogueState | null): void {
     this.dialogue = dialogue
-    this.emit({ type: 'dialogue:update', dialogue: dialogue ? { ...dialogue } : null })
+    this.emit({
+      type: 'dialogue:update',
+      dialogue: dialogue ? { ...dialogue } : null,
+    })
   }
 
   private async runTurn(id: AgentId, kind: TurnKind = 'normal'): Promise<void> {
@@ -522,7 +562,12 @@ export class Orchestrator {
     this.updateAgent(id, { busy: true, activity: { kind: 'thinking' } })
     // In a dialogue or 実装＋レビュー, each reply is for the other agent.
     const to = kind === 'normal' ? replyTarget(unseen, id) : otherAgent(id)
-    const reply = this.addMessage({ from: id, to, text: '', status: 'streaming' })
+    const reply = this.addMessage({
+      from: id,
+      to,
+      text: '',
+      status: 'streaming',
+    })
     // Stopping answers the cards still waiting at once: Codex finishes a turn only after its approval
     // requests are answered, so waiting for the turn to end first would never stop it.
     controller.signal.addEventListener(
@@ -598,7 +643,11 @@ export class Orchestrator {
       if (this.dialogue) {
         if (reply.status === 'error') this.stopDialogue('error')
         else if (reply.status === 'stopped') this.stopDialogue('user')
-        else this.setDialogueState({ next: otherAgent(id), turns: this.dialogue.turns + 1 })
+        else
+          this.setDialogueState({
+            next: otherAgent(id),
+            turns: this.dialogue.turns + 1,
+          })
       }
     } else if (kind === 'implement' || kind === 'review') {
       await this.afterReviewTurn(kind, reply)
@@ -630,13 +679,22 @@ export class Orchestrator {
   /** Shows an approval card and waits for the user's answer. */
   private askApproval(id: AgentId, reply: ChatMessage, ask: ApprovalRequest, turn: TurnApprovals, signal: AbortSignal): Promise<'allow' | 'deny'> {
     if (signal.aborted) return Promise.resolve('deny')
-    const entry: ApprovalEntry = { id: `${reply.id}-${this.nextApprovalNumber++}`, ...ask, status: turn.allowAll ? 'allowed' : 'pending' }
+    const entry: ApprovalEntry = {
+      id: `${reply.id}-${this.nextApprovalNumber++}`,
+      ...ask,
+      status: turn.allowAll ? 'allowed' : 'pending',
+    }
     reply.approvals = upsert(reply.approvals, entry)
     this.emit({ type: 'message:approval', id: reply.id, approval: entry })
     if (turn.allowAll) return Promise.resolve('allow')
     this.setActivity(id, { kind: 'waiting' })
     return new Promise((resolve) => {
-      this.pendingApprovals.set(entry.id, { messageId: reply.id, agent: id, turn, resolve })
+      this.pendingApprovals.set(entry.id, {
+        messageId: reply.id,
+        agent: id,
+        turn,
+        resolve,
+      })
     })
   }
 
@@ -647,9 +705,16 @@ export class Orchestrator {
     const message = this.messages.find((m) => m.id === pending.messageId)
     const entry = message?.approvals?.find((a) => a.id === approvalId)
     if (message && entry) {
-      const settled: ApprovalEntry = { ...entry, status: decision === 'allow' ? 'allowed' : 'denied' }
+      const settled: ApprovalEntry = {
+        ...entry,
+        status: decision === 'allow' ? 'allowed' : 'denied',
+      }
       message.approvals = upsert(message.approvals, settled)
-      this.emit({ type: 'message:approval', id: message.id, approval: settled })
+      this.emit({
+        type: 'message:approval',
+        id: message.id,
+        approval: settled,
+      })
     }
     if (this.agents[pending.agent].controller && ![...this.pendingApprovals.values()].some((p) => p.agent === pending.agent)) {
       this.setActivity(pending.agent, { kind: 'thinking' })
@@ -668,11 +733,20 @@ export class Orchestrator {
   }
 
   private emitWorkspace(): void {
-    this.emit({ type: 'workspace:update', workspace: this.workspace ? { ...this.workspace } : null, approvalMode: this.approvalMode })
+    this.emit({
+      type: 'workspace:update',
+      workspace: this.workspace ? { ...this.workspace } : null,
+      approvalMode: this.approvalMode,
+      roles: this.roles,
+    })
   }
 
   private addMessage(fields: Omit<ChatMessage, 'id' | 'at'>): ChatMessage {
-    const message: ChatMessage = { id: this.nextMessageId++, at: this.now().toISOString(), ...fields }
+    const message: ChatMessage = {
+      id: this.nextMessageId++,
+      at: this.now().toISOString(),
+      ...fields,
+    }
     this.messages.push(message)
     this.emit({ type: 'message:add', message: { ...message } })
     return message

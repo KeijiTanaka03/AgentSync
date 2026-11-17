@@ -1,8 +1,9 @@
 import type { AgentActivity, AgentChoices, AgentId, ApprovalEntry, ApprovalMode, ToolLogEntry } from '../../shared/types'
 
 /**
- * What an agent may do on this turn.
- * - `chat`: talk only (no tools), in an empty folder.
+ * What an agent may do on this turn. In every case the CLI keeps its own abilities (web search, the
+ * connectors set up in it such as Notion); reading goes ahead, changing anything waits for the user.
+ * - `chat`: a conversation without a project, in an empty folder.
  * - `read`: read and search the project, change nothing.
  * - `write`: also edit files and run commands, with the user's approval unless `approval` is `auto`.
  */

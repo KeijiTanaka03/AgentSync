@@ -11,6 +11,7 @@ import {
   type ConversationEventEnvelope,
   type ConversationSummary,
   type SendRequest,
+  type Roles,
 } from '../../shared/types'
 import type { AgentAdapter } from '../agents/types'
 import type { ConversationData, ConversationStore } from '../store/conversationStore'
@@ -48,6 +49,7 @@ interface Entry {
   /** The project folder of a coding conversation. */
   workdir: string | null
   title: string
+  pinned: boolean
   createdAt: string
   updatedAt: string
   /** Loaded when the conversation is first opened. */
@@ -79,6 +81,7 @@ export class ChatManager {
         kind: data.kind,
         workdir: data.workdir,
         title: data.title,
+        pinned: data.pinned === true,
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
         orchestrator: null,
@@ -97,6 +100,7 @@ export class ChatManager {
         dialogue: entry.orchestrator?.inDialogue ?? false,
         review: entry.orchestrator?.inReview ?? false,
         kind: entry.kind,
+        pinned: entry.pinned,
       }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
@@ -127,7 +131,17 @@ export class ChatManager {
     let id = this.newId()
     while (this.entries.has(id)) id = this.newId()
     const at = this.now().toISOString()
-    const entry: Entry = { id, kind, workdir, title: DEFAULT_TITLE, createdAt: at, updatedAt: at, orchestrator: null, saveTimer: null }
+    const entry: Entry = {
+      id,
+      kind,
+      workdir,
+      title: DEFAULT_TITLE,
+      pinned: false,
+      createdAt: at,
+      updatedAt: at,
+      orchestrator: null,
+      saveTimer: null,
+    }
     entry.orchestrator = this.createOrchestrator(entry)
     this.entries.set(id, entry)
     this.publishList()
@@ -136,6 +150,16 @@ export class ChatManager {
 
   rename(id: string, title: string): void {
     this.orchestrator(id).setTitle(title)
+  }
+
+  /** Pins a conversation to the top of the list, or unpins it. Its place in time does not change. */
+  pin(id: string, pinned: boolean): void {
+    this.orchestrator(id) // loaded, so it can be written back with the new flag
+    const entry = this.entries.get(id)!
+    if (entry.pinned === pinned) return
+    entry.pinned = pinned
+    this.scheduleSave(entry)
+    this.publishList()
   }
 
   /** Chooses an agent's effort in one conversation; new conversations start with it too. */
@@ -215,6 +239,10 @@ export class ChatManager {
 
   setApprovalMode(id: string, mode: ApprovalMode): void {
     this.orchestrator(id).setApprovalMode(mode)
+  }
+
+  setRoles(id: string, roles: Roles): void {
+    this.orchestrator(id).setRoles(roles)
   }
 
   stopAll(): void {
@@ -305,6 +333,7 @@ export class ChatManager {
         id: entry.id,
         kind: entry.kind,
         workdir: entry.workdir,
+        pinned: entry.pinned,
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
         ...orchestrator.content(),
