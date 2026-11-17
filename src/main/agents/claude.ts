@@ -1,3 +1,4 @@
+import { appUpdateEnabled, APP_UPDATE_TARGET, isAppUpdateCommand } from './appUpdate'
 import { spawn } from 'node:child_process'
 import readline from 'node:readline'
 import path from 'node:path'
@@ -97,7 +98,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   constructor(private readonly options: ClaudeAdapterOptions) {}
 
-  static buildArgs(request: Pick<AgentRunRequest, 'systemPrompt' | 'model' | 'effort' | 'sessionId' | 'access' | 'approval'>): string[] {
+  static buildArgs(request: Pick<AgentRunRequest, 'systemPrompt' | 'model' | 'effort' | 'sessionId' | 'access' | 'approval'> & { cwd?: string }): string[] {
     // Claude Code as it usually is (its own instructions, tools and connectors), with the group chat explained
     // on top. Whatever needs permission comes to us over stdin/stdout (stream-json), to be shown as a card.
     const mode = request.access === 'write' && request.approval === 'auto' ? 'auto' : 'manual'
@@ -105,6 +106,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // A read-only turn of a coding conversation: reading the project and the web, and the connectors.
     if (request.access === 'read') args.push('--tools', READ_TOOLS)
     args.push('--input-format', 'stream-json', '--permission-mode', mode, '--permission-prompts', 'host', '--permission-prompt-tool', 'stdio')
+    if (mode === 'auto' && appUpdateEnabled(request.cwd)) args.push('--add-dir', APP_UPDATE_TARGET)
     if (request.model) args.push('--model', request.model)
     if (request.effort) args.push('--effort', request.effort)
     if (request.sessionId) args.push('--resume', request.sessionId)
@@ -146,6 +148,8 @@ export class ClaudeAdapter implements AgentAdapter {
             response = { behavior: 'allow', updatedInput: input }
           } else if (request.access === 'read') {
             response = { behavior: 'deny', message: 'このターンは読み取り専用です。' }
+          } else if (request.access === 'write' && request.approval === 'auto' && appUpdateEnabled(request.cwd) && body.tool_name === 'Bash' && isAppUpdateCommand(input.command, request.cwd)) {
+            response = { behavior: 'allow', updatedInput: input }
           } else if (request.access === 'write' && writesOutside(body.tool_name, input, request.cwd)) {
             response = { behavior: 'deny', message: '作業フォルダの外には書き込めません。' }
           } else {

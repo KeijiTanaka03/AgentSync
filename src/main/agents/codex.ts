@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { appUpdateEnabled, APP_UPDATE_TARGET } from './appUpdate'
 import type { AgentActivity, AgentChoices, ToolLogEntry } from '../../shared/types'
 import type { Access, AgentAdapter, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
 import { RpcError, type RpcConnection } from './jsonRpc'
@@ -84,7 +85,7 @@ const MAX_TITLE = 200
 const MAX_DETAIL = 4_000
 
 /** How a Codex thread may touch the project for an access level. */
-export function codexPolicy(access: Access, approval: 'ask' | 'auto') {
+export function codexPolicy(access: Access, approval: 'ask' | 'auto', allowAppUpdate = false) {
   if (access !== 'write') {
     // 「on-request」, not 「never」: with 「never」 Codex refuses connector calls set to ask first by itself.
     return { sandbox: 'read-only', approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
@@ -94,7 +95,7 @@ export function codexPolicy(access: Access, approval: 'ask' | 'auto') {
     // 「untrusted」 asks before every command that is not plainly safe and before every file change;
     // 「on-request」 is Codex's auto mode, which asks only when it wants to go beyond the sandbox.
     approvalPolicy: approval === 'auto' ? 'on-request' : 'untrusted',
-    sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+    sandboxPolicy: { type: 'workspaceWrite', writableRoots: approval === 'auto' && allowAppUpdate && process.platform === 'darwin' ? [APP_UPDATE_TARGET] : [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
   }
 }
 
@@ -222,7 +223,7 @@ export class CodexAdapter implements AgentAdapter {
     if (request.signal.aborted) return { text: '', status: 'stopped' }
 
     // Chat: read-only in an empty folder, never asking. Coding: the project folder, as the access allows.
-    const policy = codexPolicy(request.access, request.approval)
+    const policy = codexPolicy(request.access, request.approval, appUpdateEnabled(request.cwd))
     const { mcpServers } = await this.readConfig(rpc)
     const threadSettings = {
       cwd: request.cwd,
@@ -506,7 +507,7 @@ export class CodexAdapter implements AgentAdapter {
           // A coding thread changes between reading and writing from turn to turn.
           ...(request.access === 'chat'
             ? {}
-            : { approvalPolicy: codexPolicy(request.access, request.approval).approvalPolicy, sandboxPolicy: codexPolicy(request.access, request.approval).sandboxPolicy }),
+            : { approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy }),
           ...(overrides.model ? { model: overrides.model } : {}),
           ...(overrides.effort ? { effort: overrides.effort } : {}),
         })

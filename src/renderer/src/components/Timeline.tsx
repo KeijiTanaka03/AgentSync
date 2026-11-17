@@ -17,30 +17,42 @@ function withDialogueMarks(messages: ChatMessage[]): { message: ChatMessage; inD
 }
 
 interface TimelineProps {
+  initialScrollTop?: number
+  followOwnMessages?: boolean
   messages: ChatMessage[]
   agents: Record<AgentId, AgentInfo>
   kind?: ConversationKind
   onApprove?(approvalId: string, decision: ApprovalDecision): void
 }
 
-export function Timeline({ messages, agents, kind = 'chat', onApprove }: TimelineProps) {
+export function Timeline({ messages, agents, kind = 'chat', onApprove, followOwnMessages = true, initialScrollTop }: TimelineProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
+  const initialized = useRef(false)
   const lastCount = useRef(messages.length)
   const [awayFromBottom, setAwayFromBottom] = useState(false)
 
   useLayoutEffect(() => {
     const element = scroller.current
     if (!element) return
+    if (!initialized.current) {
+      initialized.current = true
+      if (initialScrollTop !== undefined) {
+        element.scrollTop = initialScrollTop
+        stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < STICK_THRESHOLD
+        setAwayFromBottom(!stickToBottom.current)
+        return
+      }
+    }
     const added = messages.slice(lastCount.current)
     lastCount.current = messages.length
-    // Always follow your own new message; otherwise follow only if already at the bottom.
-    if (stickToBottom.current || added.some((m) => m.from === 'user')) {
+    // In split view each pane follows only while already at the bottom.
+    if (stickToBottom.current || (followOwnMessages && added.some((m) => m.from === 'user'))) {
       element.scrollTop = element.scrollHeight
       stickToBottom.current = true
       setAwayFromBottom(false)
     }
-  }, [messages])
+  }, [messages, followOwnMessages, initialScrollTop])
 
   const onScroll = () => {
     const element = scroller.current

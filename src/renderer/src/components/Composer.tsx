@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AGENT_IDS, DISPLAY_NAMES, isAgentId, otherAgent, type ApprovalMode, type Roles, type SendTarget } from '../../../shared/types'
 import { parseLeadingMention } from '../../../shared/validate'
 import { CheckIcon, CodeIcon, LoopIcon } from './icons'
@@ -49,6 +49,7 @@ export function Composer({
   roles = 'single',
   onRoles,
 }: ComposerProps) {
+  const messageId = useId()
   const implementer = isAgentId(roles) ? roles : null
   const [to, setTo] = useState<SendTarget>('all')
   // ↑ / ↓: which earlier message is shown (null: your own draft), and the draft kept meanwhile.
@@ -225,11 +226,11 @@ export function Composer({
         </div>
       </div>
       <div className="composer-bottom">
-        <label htmlFor="message" className="visually-hidden">
+        <label htmlFor={messageId} className="visually-hidden">
           メッセージ
         </label>
         <textarea
-          id="message"
+          id={messageId}
           ref={box}
           rows={1}
           value={text}

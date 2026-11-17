@@ -9,6 +9,8 @@ files:
   - out/**/*
   - '!out/main/selftest-*.js' # development only
   - package.json
+# Reuse the Electron installed by npm; packaging does not download another copy.
+electronDist: node_modules/electron/dist
 asar: true
 mac:
   target:

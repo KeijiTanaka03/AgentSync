@@ -20,7 +20,7 @@ import { CodeIcon, LoopIcon } from './icons'
 import { Timeline } from './Timeline'
 
 /** One open conversation. Mounted again (with a fresh state) for each conversation. */
-export function ChatView({ conversationId }: { conversationId: string }) {
+export function ChatView({ conversationId, active = true, independentScroll = false, initialScrollTop }: { conversationId: string; active?: boolean; independentScroll?: boolean; initialScrollTop?: number }) {
   const { state, loadError, send, stop } = useChat(conversationId)
   const loadChoices = useCallback((agent: AgentId) => window.agentsync.agentChoices(conversationId, agent), [conversationId])
 
@@ -29,12 +29,13 @@ export function ChatView({ conversationId }: { conversationId: string }) {
     void window.agentsync.setDialogue(conversationId, current.dialogue === null).catch((error: unknown) => console.error(errorMessage(error)))
   }
 
-  // Menu shortcuts (⇧⌘D, ⌘.) act on the conversation that is open.
-  const latest = useRef({ state, toggleDialogue, stop })
-  latest.current = { state, toggleDialogue, stop }
+  // Menu shortcuts (⇧⌘D, ⌘.) act only on the selected pane.
+  const latest = useRef({ state, toggleDialogue, stop, active })
+  latest.current = { state, toggleDialogue, stop, active }
   // Esc stops the replies, as in Claude Code — unless it is closing something else or ending an IME conversion.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (!latest.current.active) return
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
       const current = latest.current.state
       if (!current) return
@@ -48,6 +49,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
   useEffect(
     () =>
       window.agentsync.onMenuCommand((command) => {
+        if (!latest.current.active) return
         const { state: current, toggleDialogue: toggle, stop: stopReplies } = latest.current
         if (command === 'stop') void stopReplies()
         else if (command === 'toggle-dialogue' && current) toggle(current)
@@ -90,6 +92,8 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       />
       <Timeline
         messages={state.messages}
+        followOwnMessages={!independentScroll}
+        initialScrollTop={initialScrollTop}
         agents={state.agents}
         kind={state.kind}
         onApprove={(approvalId, decision) => {
