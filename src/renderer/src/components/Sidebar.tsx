@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ConversationSummary } from '../../../shared/types'
-import { MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
+import { LoopIcon, MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
 
@@ -98,7 +98,13 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onRename,
                           onDoubleClick={() => setEditingId(id)}
                         >
                           <span className="conversation-title">{title}</span>
-                          {conversation.busy && <span className="conversation-busy" aria-label="返信中" />}
+                          {conversation.dialogue ? (
+                            <span className="conversation-dialogue" role="img" aria-label="対話中" title="対話中">
+                              <LoopIcon size={14} />
+                            </span>
+                          ) : (
+                            conversation.busy && <span className="conversation-busy" aria-label="返信中" />
+                          )}
                         </button>
                         <button
                           type="button"

@@ -106,6 +106,27 @@ describe('parseConversation', () => {
     })
   })
 
+  it('keeps notices from AgentSync and drops system messages that are not one', () => {
+    const at = '2026-11-17T05:00:00.000Z'
+    const parsed = parseConversation(
+      {
+        version: 1,
+        messages: [
+          { id: 1, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at, status: 'done', notice: 'dialogue-start' },
+          { id: 2, from: 'system', to: 'all', text: '?', at, status: 'done' },
+          { id: 3, from: 'system', to: 'all', text: '?', at, status: 'done', notice: 'launch' },
+          { id: 4, from: 'claude', to: 'gpt', text: '反論します', at, status: 'done' },
+          { id: 5, from: 'claude', to: 'system', text: '?', at, status: 'done' },
+        ],
+      },
+      'a1',
+    )
+    expect(parsed.messages.map((m) => [m.id, m.from, m.notice])).toEqual([
+      [1, 'system', 'dialogue-start'],
+      [4, 'claude', undefined],
+    ])
+  })
+
   it('keeps a chosen effort and drops one that is not a plain name', () => {
     const parsed = parseConversation(
       { version: 1, participants: { claude: { effort: 'low' }, gpt: { effort: '--model x' } } },

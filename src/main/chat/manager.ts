@@ -78,6 +78,7 @@ export class ChatManager {
         title: entry.title,
         updatedAt: entry.updatedAt,
         busy: entry.orchestrator?.busy ?? false,
+        dialogue: entry.orchestrator?.inDialogue ?? false,
       }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
@@ -147,6 +148,10 @@ export class ChatManager {
     this.entries.get(id)?.orchestrator?.stop()
   }
 
+  setDialogue(id: string, on: boolean): void {
+    this.orchestrator(id).setDialogue(on)
+  }
+
   stopAll(): void {
     for (const entry of this.entries.values()) entry.orchestrator?.stop()
   }
@@ -164,10 +169,13 @@ export class ChatManager {
     }
   }
 
-  /** For quitting: writes everything, then stops the replies and the CLIs. */
+  /**
+   * For quitting: stops the replies (a dialogue says it ended), writes everything including the text
+   * received so far, then closes the CLIs.
+   */
   dispose(): void {
-    this.flush(true)
     this.stopAll()
+    this.flush(true)
     for (const adapter of Object.values(this.options.adapters)) adapter.dispose()
   }
 

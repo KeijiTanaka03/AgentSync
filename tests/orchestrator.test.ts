@@ -266,3 +266,167 @@ describe('Orchestrator', () => {
     expect(messages()[0]!.status).toBe('stopped')
   })
 })
+
+describe('Orchestrator dialogue mode', () => {
+  const start = '【AgentSync からのお知らせ】\nここから「対話モード」です。'
+
+  /** A topic both agents have answered, GPT last. */
+  async function debate() {
+    const t = setup()
+    t.orchestrator.send({ text: '在宅勤務は生産的？議論して', to: 'all' })
+    await flush()
+    t.claude.reply('生産的です')
+    t.gpt.reply('そうとも限りません')
+    await flush()
+    return t
+  }
+
+  it('starts with the AI that did not speak last, then alternates; each reply goes to the other', async () => {
+    const { claude, gpt, orchestrator, messages } = await debate()
+    orchestrator.setDialogue(true)
+    await flush()
+
+    expect(orchestrator.snapshot().state.dialogue).toEqual({ next: 'claude', turns: 0 })
+    expect(messages().at(-2)).toMatchObject({ from: 'system', to: 'all', notice: 'dialogue-start', text: 'ここから対話モード · Claude から開始' })
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]!.prompt).toContain('【GPT → ユーザー】\nそうとも限りません\n\n' + start + 'あなたと GPT が交互に発言し')
+    expect(gpt.pending).toBe(0)
+
+    claude.reply('通勤がなくなります')
+    await flush()
+    expect(messages().find((m) => m.text === '通勤がなくなります')).toMatchObject({ from: 'claude', to: 'gpt' })
+    expect(orchestrator.snapshot().state.dialogue).toEqual({ next: 'gpt', turns: 1 })
+    expect(gpt.calls).toHaveLength(2)
+    expect(gpt.calls[1]!.prompt).toContain(start + 'あなたと Claude が交互に発言し')
+    expect(gpt.calls[1]!.prompt.endsWith('【Claude → あなた】\n通勤がなくなります')).toBe(true)
+
+    gpt.reply('でも新人は育ちにくい')
+    await flush()
+    expect(claude.calls).toHaveLength(3)
+    expect(claude.calls[2]!.prompt).toBe('【GPT → あなた】\nでも新人は育ちにくい')
+    expect(orchestrator.snapshot().state.dialogue).toEqual({ next: 'claude', turns: 2 })
+    expect(orchestrator.inDialogue).toBe(true)
+  })
+
+  it('hands what the user says meanwhile to the next speaker and keeps going', async () => {
+    const { claude, gpt, orchestrator } = await debate()
+    orchestrator.setDialogue(true)
+    await flush()
+    orchestrator.send({ text: '新人の育成に絞って', to: 'all' })
+    await flush()
+    expect(gpt.pending).toBe(0) // no extra reply: it waits for its turn
+    expect(claude.pending).toBe(1)
+
+    claude.reply('通勤がなくなります')
+    await flush()
+    const prompt = gpt.calls.at(-1)!.prompt
+    expect(prompt.indexOf('【ユーザー → 全員】\n新人の育成に絞って')).toBeGreaterThan(prompt.indexOf(start))
+    expect(orchestrator.inDialogue).toBe(true)
+  })
+
+  it('stops when turned off: the reply under way is stopped and nobody else is asked', async () => {
+    const { claude, gpt, orchestrator, messages } = await debate()
+    orchestrator.setDialogue(true)
+    await flush()
+    orchestrator.setDialogue(false)
+    await flush()
+
+    expect(orchestrator.snapshot().state.dialogue).toBeNull()
+    expect(messages().at(-2)).toMatchObject({ from: 'claude', status: 'stopped' })
+    expect(messages().at(-1)).toMatchObject({ from: 'system', notice: 'dialogue-stop', text: '対話モードを止めました' })
+    expect(gpt.calls).toHaveLength(1)
+    expect(claude.pending).toBe(0)
+
+    // Turning it on again continues from there, with GPT (Claude spoke last).
+    orchestrator.setDialogue(true)
+    await flush()
+    expect(gpt.calls).toHaveLength(2)
+    expect(gpt.calls[1]!.prompt).toContain('【AgentSync からのお知らせ】\n対話モードが終わりました。')
+  })
+
+  it('stops on an error, and with the stop button', async () => {
+    const first = await debate()
+    first.orchestrator.setDialogue(true)
+    await flush()
+    first.claude.fail('使用枠の上限に達しました')
+    await flush()
+    expect(first.orchestrator.inDialogue).toBe(false)
+    expect(first.messages().at(-1)).toMatchObject({ notice: 'dialogue-stop', text: 'エラーが起きたので対話モードを止めました' })
+    expect(first.gpt.calls).toHaveLength(1)
+
+    const second = await debate()
+    second.orchestrator.setDialogue(true)
+    await flush()
+    second.orchestrator.stop()
+    await flush()
+    expect(second.orchestrator.inDialogue).toBe(false)
+    expect(second.messages().at(-1)).toMatchObject({ notice: 'dialogue-stop', text: '対話モードを止めました' })
+  })
+
+  it('stops when the next speaker has nothing new to answer', async () => {
+    const { claude, gpt, orchestrator, messages } = await debate()
+    orchestrator.setDialogue(true)
+    await flush()
+    claude.reply('通勤がなくなります')
+    await flush()
+    gpt.reply('でも新人は育ちにくい')
+    await flush()
+    claude.reply('') // GPT has seen everything else, so it has nothing to answer
+    await flush()
+    expect(orchestrator.inDialogue).toBe(false)
+    expect(messages().at(-1)).toMatchObject({ notice: 'dialogue-stop', text: '次の話者に渡す発言がないので対話モードを止めました' })
+    expect(gpt.calls).toHaveLength(2)
+  })
+
+  it('waits for replies already under way before the first turn', async () => {
+    const { claude, gpt, orchestrator, messages } = setup()
+    orchestrator.send({ text: 'お題です', to: 'all' })
+    await flush()
+    orchestrator.setDialogue(true) // both are still replying; GPT's reply is the last message
+    await flush()
+    expect(messages().at(-1)).toMatchObject({ text: 'ここから対話モード · Claude から開始' })
+    claude.reply('A')
+    await flush()
+    expect(claude.calls).toHaveLength(1) // still waiting for GPT
+    gpt.reply('B')
+    await flush()
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]!.prompt.startsWith('【GPT → ユーザー】\nB')).toBe(true)
+  })
+
+  it('starts with GPT when you spoke to GPT last', () => {
+    const { orchestrator, messages } = setup({
+      title: 't',
+      messages: [{ id: 1, from: 'user', to: 'gpt', text: 'GPT から話して', at: '2026-11-17T05:00:00.000Z', status: 'done' }],
+      participants: {
+        claude: { model: null, effort: null, sessionId: null, delivered: [] },
+        gpt: { model: null, effort: null, sessionId: null, delivered: [] },
+      },
+    })
+    orchestrator.setDialogue(true)
+    expect(orchestrator.snapshot().state.dialogue).toEqual({ next: 'gpt', turns: 0 })
+    expect(messages().at(-2)!.text).toBe('ここから対話モード · GPT から開始')
+  })
+
+  it('closes a dialogue the app was in when it quit', () => {
+    const { messages } = setup({
+      title: 't',
+      messages: [
+        { id: 1, from: 'user', to: 'all', text: 'お題', at: '2026-11-17T05:00:00.000Z', status: 'done' },
+        { id: 2, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at: '2026-11-17T05:00:01.000Z', status: 'done', notice: 'dialogue-start' },
+        { id: 3, from: 'claude', to: 'gpt', text: '途中', at: '2026-11-17T05:00:02.000Z', status: 'streaming' },
+      ],
+      participants: {
+        claude: { model: null, effort: null, sessionId: 'c', delivered: [1, 2] },
+        gpt: { model: null, effort: null, sessionId: 'g', delivered: [1] },
+      },
+    })
+    expect(messages().map((m) => [m.id, m.from, m.status, m.notice])).toEqual([
+      [1, 'user', 'done', undefined],
+      [2, 'system', 'done', 'dialogue-start'],
+      [3, 'claude', 'stopped', undefined],
+      [4, 'system', 'done', 'dialogue-stop'],
+    ])
+  })
+})
+

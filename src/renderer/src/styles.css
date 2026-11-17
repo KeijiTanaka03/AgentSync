@@ -21,6 +21,7 @@
   --danger: #9a2f2f;
   --danger-bg: #f8e9e7;
   --on-strong: #faf9f5;
+  --dialogue-bg: #fbefe8;
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
   --font-serif: 'Hiragino Mincho ProN', 'Yu Mincho', 'Noto Serif JP', serif;
@@ -48,6 +49,7 @@
     --danger: #f0a39b;
     --danger-bg: #3a2422;
     --on-strong: #1f1e1c;
+    --dialogue-bg: #33261f;
   }
 }
 
@@ -811,6 +813,105 @@ button {
   color: var(--danger);
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+/* ---------- dialogue mode ---------- */
+
+/* A notice across the timeline: ── ここから対話モード · Claude から開始 ── */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.notice::before,
+.notice::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.notice-dialogue-start {
+  color: var(--claude-ink);
+}
+
+.interrupt-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialogue-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dialogue-toggle:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.dialogue-toggle[aria-pressed='true'] {
+  border-color: var(--claude);
+  background: var(--claude);
+  color: #ffffff;
+}
+
+.dialogue-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dialogue-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--claude-line);
+  border-radius: 14px;
+  background: var(--dialogue-bg);
+  font-size: 13px;
+}
+
+.dialogue-bar b,
+.dialogue-bar-icon {
+  color: var(--claude-ink);
+}
+
+.dialogue-next {
+  color: var(--muted);
+}
+
+.dialogue-hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.conversation-dialogue {
+  flex: none;
+  display: inline-flex;
+  color: var(--claude);
 }
 
 /* ---------- markdown ---------- */

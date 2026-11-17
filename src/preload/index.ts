@@ -30,6 +30,7 @@ const api: AgentSyncApi = {
     ipcRenderer.invoke('agents:effort', id, agent, effort) as Promise<void>,
   send: (id: string, request: SendRequest) => ipcRenderer.invoke('chat:send', id, request) as Promise<void>,
   stop: (id: string) => ipcRenderer.invoke('chat:stop', id) as Promise<void>,
+  setDialogue: (id: string, on: boolean) => ipcRenderer.invoke('chat:dialogue', id, on) as Promise<void>,
   onEvent: (listener) => subscribe<ConversationEventEnvelope>('chat:event', listener),
   onConversations: (listener) => subscribe<ConversationSummary[]>('conversations:changed', listener),
   onMenuCommand: (listener) => subscribe<MenuCommand>('menu:command', listener),

@@ -258,6 +258,10 @@ function registerIpc(): void {
   ipcMain.handle('chat:stop', (event, id: unknown) => {
     fromMainWindow(event).stop(parseConversationId(id))
   })
+  ipcMain.handle('chat:dialogue', (event, id: unknown, on: unknown) => {
+    if (typeof on !== 'boolean') throw new Error('対話モードの指定が不正です')
+    fromMainWindow(event).setDialogue(parseConversationId(id), on)
+  })
   ipcMain.handle('agents:choices', (event, id: unknown, agent: unknown) =>
     fromMainWindow(event).agentChoices(parseConversationId(id), parseAgentId(agent)),
   )

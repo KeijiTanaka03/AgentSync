@@ -22,5 +22,7 @@ export function applyEvent(state: ChatState, event: ChatEvent): ChatState {
       return { ...state, agents: { ...state.agents, [event.id]: { ...state.agents[event.id], activity: event.activity } } }
     case 'title:update':
       return { ...state, title: event.title }
+    case 'dialogue:update':
+      return { ...state, dialogue: event.dialogue }
   }
 }

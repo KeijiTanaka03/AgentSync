@@ -1,6 +1,8 @@
 import {
   AGENT_IDS,
   DEFAULT_TITLE,
+  DISPLAY_NAMES,
+  otherAgent,
   type AgentActivity,
   type AgentChoices,
   type AgentId,
@@ -9,6 +11,7 @@ import {
   type ChatEventEnvelope,
   type ChatMessage,
   type ChatSnapshot,
+  type DialogueState,
   type SendRequest,
 } from '../../shared/types'
 import { titleFromMessage } from '../../shared/validate'
@@ -42,11 +45,24 @@ export interface OrchestratorOptions {
   now?: () => Date
 }
 
+/** Why dialogue mode ended, as shown in the timeline. */
+const DIALOGUE_STOPPED = {
+  user: '対話モードを止めました',
+  error: 'エラーが起きたので対話モードを止めました',
+  quiet: '次の話者に渡す発言がないので対話モードを止めました',
+  restart: '前回は対話モードの途中で終了しました',
+} as const
+
+type DialogueStopReason = keyof typeof DIALOGUE_STOPPED
+
 /**
  * Holds one conversation and routes it to the agents.
  *
  * Each agent keeps its own CLI session. On each turn it receives only the messages it has
  * not seen yet (from the user and the other agent), so the whole history is never resent.
+ *
+ * In dialogue mode the agents take turns: each reply goes to the other agent, until the user
+ * stops it or a reply fails. What the user says meanwhile reaches the next speaker.
  */
 export class Orchestrator {
   private readonly messages: ChatMessage[]
@@ -55,6 +71,9 @@ export class Orchestrator {
   private title: string
   private nextMessageId: number
   private seq = 0
+  private dialogue: DialogueState | null = null
+  /** The agent whose dialogue turn is running. */
+  private dialogueSpeaker: AgentId | null = null
 
   constructor(private readonly options: OrchestratorOptions) {
     const initial = options.initial
@@ -82,6 +101,12 @@ export class Orchestrator {
         return [id, runtime]
       }),
     ) as Record<AgentId, AgentRuntime>
+
+    // The app closed during a dialogue: say it ended, so the agents know too.
+    const lastNotice = this.messages.findLast((m) => m.from === 'system')
+    if (lastNotice?.notice === 'dialogue-start') {
+      this.messages.push(this.stopNotice('restart'))
+    }
   }
 
   snapshot(): ChatSnapshot {
@@ -91,6 +116,7 @@ export class Orchestrator {
         title: this.title,
         messages: this.messages.map((m) => ({ ...m })),
         agents: Object.fromEntries(AGENT_IDS.map((id) => [id, { ...this.agents[id].info }])) as Record<AgentId, AgentInfo>,
+        dialogue: this.dialogue ? { ...this.dialogue } : null,
       },
     }
   }
@@ -127,6 +153,10 @@ export class Orchestrator {
     return this.title
   }
 
+  get inDialogue(): boolean {
+    return this.dialogue !== null
+  }
+
   send(request: SendRequest): void {
     const text = request.text.trim()
     if (!text) return
@@ -137,8 +167,19 @@ export class Orchestrator {
       const title = titleFromMessage(text)
       if (title) this.setTitle(title)
     }
+    if (this.dialogue) {
+      // An interruption: the next speaker gets it with the rest, and the dialogue goes on.
+      this.advanceDialogue()
+      return
+    }
     const targets = request.to === 'all' ? AGENT_IDS : [request.to]
     for (const id of targets) this.trigger(id)
+  }
+
+  /** Turns dialogue mode on (from where the conversation is now) or off. */
+  setDialogue(on: boolean): void {
+    if (on) this.startDialogue()
+    else this.stopDialogue('user')
   }
 
   setTitle(title: string): void {
@@ -159,8 +200,9 @@ export class Orchestrator {
     return agent.adapter.choices(agent.info.model)
   }
 
-  /** Stops every reply in progress. */
+  /** Stops every reply in progress, and dialogue mode. */
   stop(): void {
+    this.stopDialogue('user')
     for (const id of AGENT_IDS) {
       const agent = this.agents[id]
       agent.rerun = false
@@ -177,7 +219,73 @@ export class Orchestrator {
     void this.runTurn(id)
   }
 
-  private async runTurn(id: AgentId): Promise<void> {
+  private startDialogue(): void {
+    if (this.dialogue) return
+    const first = this.firstSpeaker()
+    this.addMessage({
+      from: 'system',
+      to: 'all',
+      text: `ここから対話モード · ${DISPLAY_NAMES[first]} から開始`,
+      status: 'done',
+      notice: 'dialogue-start',
+    })
+    this.setDialogueState({ next: first, turns: 0 })
+    this.advanceDialogue()
+  }
+
+  /** The AI that did not speak last. After the user: Claude, or GPT when the user spoke to GPT. */
+  private firstSpeaker(): AgentId {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i]!
+      if (m.from === 'system') continue
+      if (m.from === 'user') return m.to === 'gpt' ? 'gpt' : 'claude'
+      return otherAgent(m.from)
+    }
+    return 'claude'
+  }
+
+  private stopDialogue(reason: DialogueStopReason): void {
+    if (!this.dialogue) return
+    this.setDialogueState(null)
+    const speaker = this.dialogueSpeaker
+    if (reason === 'user' && speaker) this.agents[speaker].controller?.abort()
+    const notice = this.stopNotice(reason)
+    this.messages.push(notice)
+    this.emit({ type: 'message:add', message: { ...notice } })
+  }
+
+  private stopNotice(reason: DialogueStopReason): ChatMessage {
+    return {
+      id: this.nextMessageId++,
+      at: this.now().toISOString(),
+      from: 'system',
+      to: 'all',
+      text: DIALOGUE_STOPPED[reason],
+      status: 'done',
+      notice: 'dialogue-stop',
+    }
+  }
+
+  /** Starts the next dialogue turn, once replies already under way have finished. */
+  private advanceDialogue(): void {
+    const dialogue = this.dialogue
+    if (!dialogue || this.dialogueSpeaker) return
+    if (AGENT_IDS.some((id) => this.agents[id].controller)) return
+    const speaker = dialogue.next
+    if (collectUnseen(this.messages, speaker, this.agents[speaker].delivered).length === 0) {
+      this.stopDialogue('quiet')
+      return
+    }
+    this.dialogueSpeaker = speaker
+    void this.runTurn(speaker, true)
+  }
+
+  private setDialogueState(dialogue: DialogueState | null): void {
+    this.dialogue = dialogue
+    this.emit({ type: 'dialogue:update', dialogue: dialogue ? { ...dialogue } : null })
+  }
+
+  private async runTurn(id: AgentId, dialogueTurn = false): Promise<void> {
     const agent = this.agents[id]
     const unseen = collectUnseen(this.messages, id, agent.delivered)
     if (unseen.length === 0) return
@@ -187,7 +295,9 @@ export class Orchestrator {
     agent.controller = controller
     // Models think before they write, so a reply starts as 「考え中」.
     this.updateAgent(id, { busy: true, activity: { kind: 'thinking' } })
-    const reply = this.addMessage({ from: id, to: replyTarget(unseen, id), text: '', status: 'streaming' })
+    // In a dialogue, each reply is for the other agent.
+    const to = dialogueTurn ? otherAgent(id) : replyTarget(unseen, id)
+    const reply = this.addMessage({ from: id, to, text: '', status: 'streaming' })
 
     try {
       const result = await agent.adapter.run({
@@ -231,7 +341,19 @@ export class Orchestrator {
       this.updateAgent(id, { busy: false, activity: null })
     }
 
-    if (agent.rerun) {
+    if (dialogueTurn) {
+      this.dialogueSpeaker = null
+      if (this.dialogue) {
+        if (reply.status === 'error') this.stopDialogue('error')
+        else if (reply.status === 'stopped') this.stopDialogue('user')
+        else this.setDialogueState({ next: otherAgent(id), turns: this.dialogue.turns + 1 })
+      }
+    }
+    if (this.dialogue) {
+      // The dialogue gives every agent its turn, with whatever arrived meanwhile.
+      agent.rerun = false
+      this.advanceDialogue()
+    } else if (agent.rerun) {
       agent.rerun = false
       void this.runTurn(id)
     }

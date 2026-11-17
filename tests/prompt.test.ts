@@ -51,6 +51,28 @@ describe('formatUnseen', () => {
   })
 })
 
+describe('notices from AgentSync', () => {
+  const start = message({ from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', notice: 'dialogue-start' })
+  const stop = message({ from: 'system', to: 'all', text: '対話モードを止めました', notice: 'dialogue-stop' })
+
+  it('are delivered to both agents, worded for each', () => {
+    expect(collectUnseen([start], 'claude', new Set())).toEqual([start])
+    expect(formatUnseen([start], 'claude')).toMatch(/^【AgentSync からのお知らせ】\nここから「対話モード」です。あなたと GPT が交互に発言し/)
+    expect(formatUnseen([start], 'gpt')).toContain('あなたと Claude が交互に発言し')
+    expect(formatUnseen([stop], 'gpt')).toBe('【AgentSync からのお知らせ】\n対話モードが終わりました。ここからは普段のチャットに戻ります。')
+  })
+
+  it('are never what an agent replies to', () => {
+    const toAll = message({ from: 'user', to: 'all', text: 'お題' })
+    expect(replyTarget([toAll, start], 'claude')).toBe('user')
+    expect(replyTarget([start], 'claude')).toBe('user')
+  })
+
+  it('are explained in the system prompt', () => {
+    expect(chatSystemPrompt('claude')).toContain('「【AgentSync からのお知らせ】」は、このチャットのアプリからの案内です')
+  })
+})
+
 describe('replyTarget', () => {
   it('answers whoever last addressed the agent or everyone', () => {
     const toAll = message({ from: 'user', to: 'all', text: 'a' })

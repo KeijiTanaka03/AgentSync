@@ -37,4 +37,20 @@ describe('MessageItem', () => {
     expect(markup).not.toContain('class="activity')
     expect(markup).not.toContain('class="caret"')
   })
+
+  it('shows a notice from AgentSync as a line across the timeline', () => {
+    const notice: ChatMessage = { id: 3, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at: reply.at, status: 'done', notice: 'dialogue-start' }
+    expect(html(notice, null)).toBe('<p class="notice notice-dialogue-start">ここから対話モード · Claude から開始</p>')
+  })
+
+  it('marks what you said during a dialogue as an interruption', () => {
+    const said: ChatMessage = { id: 4, from: 'user', to: 'all', text: '新人の育成に絞って', at: reply.at, status: 'done' }
+    const during = renderToStaticMarkup(<MessageItem message={said} activity={null} interrupt />)
+    expect(during).toContain('割り込み · 次の話者に渡されます')
+    expect(html(said, null)).not.toContain('割り込み')
+  })
+
+  it('labels a dialogue reply with who it answers', () => {
+    expect(html({ ...reply, from: 'claude', to: 'gpt', text: '反論します', status: 'done' }, null)).toContain('▸ GPT への返信')
+  })
 })

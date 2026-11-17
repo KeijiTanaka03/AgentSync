@@ -6,6 +6,7 @@ import {
   type AgentId,
   type ChatMessage,
   type MessageStatus,
+  type NoticeKind,
   type Recipient,
   type Sender,
 } from '../../shared/types'
@@ -42,8 +43,9 @@ export interface ConversationData extends ConversationContent {
 
 const FORMAT_VERSION = 1
 const FILE_NAME = /^([a-z0-9][a-z0-9-]{0,63})\.json$/
-const SENDERS: readonly Sender[] = ['user', ...AGENT_IDS]
-const RECIPIENTS: readonly Recipient[] = ['all', ...SENDERS]
+const SENDERS: readonly Sender[] = ['user', 'system', ...AGENT_IDS]
+const RECIPIENTS: readonly Recipient[] = ['all', 'user', ...AGENT_IDS]
+const NOTICES: readonly NoticeKind[] = ['dialogue-start', 'dialogue-stop']
 const STATUSES: readonly MessageStatus[] = ['streaming', 'done', 'stopped', 'error']
 
 const isString = (value: unknown): value is string => typeof value === 'string'
@@ -51,7 +53,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 function parseMessage(raw: unknown): ChatMessage | null {
   if (!isRecord(raw)) return null
-  const { id, from, to, text, at, status, error } = raw
+  const { id, from, to, text, at, status, error, notice } = raw
   if (!Number.isSafeInteger(id) || (id as number) < 1) return null
   if (!SENDERS.includes(from as Sender) || !RECIPIENTS.includes(to as Recipient)) return null
   if (!isString(text) || !isString(at) || !STATUSES.includes(status as MessageStatus)) return null
@@ -65,6 +67,10 @@ function parseMessage(raw: unknown): ChatMessage | null {
     status: status === 'streaming' ? 'stopped' : (status as MessageStatus),
   }
   if (isString(error)) message.error = error
+  if (from === 'system') {
+    if (!NOTICES.includes(notice as NoticeKind)) return null
+    message.notice = notice as NoticeKind
+  }
   return message
 }
 

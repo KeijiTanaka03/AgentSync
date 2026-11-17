@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { DISPLAY_NAMES, type SendTarget } from '../../../shared/types'
 import { parseLeadingMention } from '../../../shared/validate'
+import { LoopIcon } from './icons'
 
 const TARGETS: { id: SendTarget; label: string }[] = [
   { id: 'all', label: '全員' },
@@ -12,11 +13,16 @@ const MAX_HEIGHT = 220
 
 interface ComposerProps {
   busy: boolean
+  /** Dialogue mode is on. */
+  dialogue: boolean
+  /** There is something to talk about (dialogue mode needs a topic). */
+  canStartDialogue: boolean
   onSend(text: string, to: SendTarget): void
   onStop(): void
+  onToggleDialogue(): void
 }
 
-export function Composer({ busy, onSend, onStop }: ComposerProps) {
+export function Composer({ busy, dialogue, canStartDialogue, onSend, onStop, onToggleDialogue }: ComposerProps) {
   const [to, setTo] = useState<SendTarget>('all')
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
@@ -72,14 +78,33 @@ export function Composer({ busy, onSend, onStop }: ComposerProps) {
             </button>
           ))}
         </div>
-        {busy && (
-          <button type="button" className="stop" onClick={onStop}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <rect x="4" y="4" width="16" height="16" rx="2" />
-            </svg>
-            停止
+        <div className="composer-actions">
+          <button
+            type="button"
+            className="dialogue-toggle"
+            aria-pressed={dialogue}
+            disabled={!dialogue && !canStartDialogue}
+            title={
+              dialogue
+                ? 'もう一度押すと対話モードを止めます'
+                : canStartDialogue
+                  ? 'Claude と GPT が交互に話し続けます（止めるまで）'
+                  : 'まず話題を送ってください'
+            }
+            onClick={onToggleDialogue}
+          >
+            <LoopIcon size={15} />
+            対話モード{dialogue ? ' ON' : ''}
           </button>
-        )}
+          {busy && (
+            <button type="button" className="stop" onClick={onStop}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="2" />
+              </svg>
+              停止
+            </button>
+          )}
+        </div>
       </div>
       <div className="composer-bottom">
         <label htmlFor="message" className="visually-hidden">
@@ -90,7 +115,7 @@ export function Composer({ busy, onSend, onStop }: ComposerProps) {
           ref={box}
           rows={1}
           value={text}
-          placeholder="メッセージを入力…（Enter で送信、Shift+Enter で改行）"
+          placeholder={dialogue ? '割り込んで発言…（対話は止めずに次の話者へ渡します）' : 'メッセージを入力…（Enter で送信、Shift+Enter で改行）'}
           onChange={(event) => {
             setText(event.target.value)
             resize()

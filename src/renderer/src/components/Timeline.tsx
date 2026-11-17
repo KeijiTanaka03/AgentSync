@@ -5,6 +5,16 @@ import { MessageItem } from './MessageItem'
 /** Distance from the bottom (px) within which new content keeps the view pinned to the bottom. */
 const STICK_THRESHOLD = 96
 
+/** Pairs each message with whether it came during a dialogue (between its start and stop notices). */
+function withDialogueMarks(messages: ChatMessage[]): { message: ChatMessage; inDialogue: boolean }[] {
+  let inDialogue = false
+  return messages.map((message) => {
+    if (message.notice === 'dialogue-start') inDialogue = true
+    else if (message.notice === 'dialogue-stop') inDialogue = false
+    return { message, inDialogue }
+  })
+}
+
 export function Timeline({ messages, agents }: { messages: ChatMessage[]; agents: Record<AgentId, AgentInfo> }) {
   const scroller = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
@@ -41,11 +51,12 @@ export function Timeline({ messages, agents }: { messages: ChatMessage[]; agents
         </div>
       ) : (
         <section className="messages" aria-label="メッセージ" aria-live="polite">
-          {messages.map((message) => (
+          {withDialogueMarks(messages).map(({ message, inDialogue }) => (
             <MessageItem
               key={message.id}
               message={message}
-              activity={message.from !== 'user' && message.status === 'streaming' ? agents[message.from].activity : null}
+              activity={message.from !== 'user' && message.from !== 'system' && message.status === 'streaming' ? agents[message.from].activity : null}
+              interrupt={inDialogue && message.from === 'user'}
             />
           ))}
         </section>

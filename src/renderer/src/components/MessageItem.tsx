@@ -24,14 +24,22 @@ interface MessageItemProps {
   message: ChatMessage
   /** What the sender is doing, for a reply that is still streaming. */
   activity: AgentActivity | null
+  /** You said this during a dialogue: it goes to the next speaker. */
+  interrupt?: boolean
 }
 
-export function MessageItem({ message, activity }: MessageItemProps) {
+export function MessageItem({ message, activity, interrupt = false }: MessageItemProps) {
   const time = formatTime(message.at)
+
+  // A notice from AgentSync, shown as a line across the timeline (「ここから対話モード」).
+  if (message.from === 'system') {
+    return <p className={`notice notice-${message.notice ?? 'info'}`}>{message.text}</p>
+  }
 
   if (message.from === 'user') {
     return (
       <div className="row row-user">
+        {interrupt && <span className="interrupt-label">割り込み · 次の話者に渡されます</span>}
         <div className="bubble bubble-user">
           <span className={`to-tag to-tag-${message.to}`}>{USER_TAGS[message.to]}</span>
           <span className="user-text">{message.text}</span>

@@ -105,4 +105,39 @@ describe.skipIf(!enabled)('real CLIs', () => {
     },
     600_000,
   )
+
+  it(
+    'runs dialogue mode: the agents answer each other in turn until it is turned off',
+    async () => {
+      await loadLoginShellPath()
+      const app = startApp(mkdtempSync(path.join(tmpdir(), 'agentsync-e2e-')))
+      const id = app.create()
+      try {
+        await ask(app, id, 'all', 'ラーメンとうどん、どちらが好き？ Claude はラーメン派、GPT はうどん派として、1 文で答えてください。')
+        const before = app.snapshot(id).state.messages.length
+        app.setDialogue(id, true) // GPT spoke last, so Claude starts
+
+        const deadline = Date.now() + 240_000
+        const dialogueReplies = () =>
+          app.snapshot(id).state.messages.slice(before).filter((m) => m.from === 'claude' || m.from === 'gpt')
+        while (dialogueReplies().filter((m) => m.status !== 'streaming').length < 2) {
+          if (Date.now() > deadline) throw new Error('timed out waiting for the dialogue')
+          await new Promise((resolve) => setTimeout(resolve, 300))
+        }
+        app.setDialogue(id, false)
+
+        const [first, second] = dialogueReplies()
+        expect([first!.from, first!.to, first!.status]).toEqual(['claude', 'gpt', 'done'])
+        expect([second!.from, second!.to, second!.status]).toEqual(['gpt', 'claude', 'done'])
+        expect(first!.text.trim()).not.toBe('')
+        expect(second!.text.trim()).not.toBe('')
+        const notices = app.snapshot(id).state.messages.filter((m) => m.from === 'system').map((m) => m.notice)
+        expect(notices).toEqual(['dialogue-start', 'dialogue-stop'])
+        expect(app.snapshot(id).state.dialogue).toBeNull()
+      } finally {
+        app.dispose()
+      }
+    },
+    300_000,
+  )
 })

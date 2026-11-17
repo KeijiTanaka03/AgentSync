@@ -19,6 +19,7 @@ const empty: ChatState = {
     claude: { id: 'claude', model: null, effort: null, busy: false, activity: null },
     gpt: { id: 'gpt', model: null, effort: null, busy: false, activity: null },
   },
+  dialogue: null,
 }
 
 const reply: ChatMessage = { id: 1, from: 'claude', to: 'user', text: '', at: '2026-11-16T05:00:00.000Z', status: 'streaming' }
@@ -51,6 +52,12 @@ describe('applyEvent', () => {
     const searching = applyEvent(busy, { type: 'agent:activity', id: 'gpt', activity: { kind: 'searching', detail: '東京 雨' } })
     expect(searching.agents.gpt).toEqual({ id: 'gpt', model: 'gpt-6-sol', effort: null, busy: true, activity: { kind: 'searching', detail: '東京 雨' } })
     expect(searching.agents.claude).toBe(empty.agents.claude)
+  })
+
+  it('turns dialogue mode on and off', () => {
+    const on = applyEvent(empty, { type: 'dialogue:update', dialogue: { next: 'gpt', turns: 3 } })
+    expect(on.dialogue).toEqual({ next: 'gpt', turns: 3 })
+    expect(applyEvent(on, { type: 'dialogue:update', dialogue: null }).dialogue).toBeNull()
   })
 
   it('renames the conversation', () => {

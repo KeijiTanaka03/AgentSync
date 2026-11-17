@@ -3,15 +3,23 @@
 export const AGENT_IDS = ['claude', 'gpt'] as const
 export type AgentId = (typeof AGENT_IDS)[number]
 
-/** Who wrote a message. */
-export type Sender = 'user' | AgentId
+export function otherAgent(id: AgentId): AgentId {
+  return id === 'claude' ? 'gpt' : 'claude'
+}
+
+/** Who wrote a message. `system` is AgentSync itself (notices such as 「ここから対話モード」). */
+export type Sender = 'user' | AgentId | 'system'
 
 /**
  * Who a message is addressed to.
  * - The user addresses `all` or one agent.
- * - An agent replies to whoever it is answering (the user, or the other agent in dialog mode).
+ * - An agent replies to whoever it is answering (the user, or the other agent in dialogue mode).
+ * - Notices are for `all`.
  */
-export type Recipient = 'all' | Sender
+export type Recipient = 'all' | 'user' | AgentId
+
+/** What a notice from AgentSync is about. */
+export type NoticeKind = 'dialogue-start' | 'dialogue-stop'
 
 export type MessageStatus = 'streaming' | 'done' | 'stopped' | 'error'
 
@@ -25,6 +33,8 @@ export interface ChatMessage {
   status: MessageStatus
   /** Set when status is `error`. */
   error?: string
+  /** Set on notices (messages from `system`). */
+  notice?: NoticeKind
 }
 
 /** What an agent is doing while it replies. */
@@ -47,10 +57,20 @@ export interface AgentInfo {
   activity: AgentActivity | null
 }
 
+/** Dialogue mode: Claude and GPT take turns until it is stopped. */
+export interface DialogueState {
+  /** Who speaks next (or is speaking now). */
+  next: AgentId
+  /** Replies so far in this dialogue. */
+  turns: number
+}
+
 export interface ChatState {
   title: string
   messages: ChatMessage[]
   agents: Record<AgentId, AgentInfo>
+  /** Null when dialogue mode is off. */
+  dialogue: DialogueState | null
 }
 
 export type ChatEvent =
@@ -61,6 +81,7 @@ export type ChatEvent =
   /** Changes often while replying; not saved. */
   | { type: 'agent:activity'; id: AgentId; activity: AgentActivity | null }
   | { type: 'title:update'; title: string }
+  | { type: 'dialogue:update'; dialogue: DialogueState | null }
 
 /** Events carry a sequence number so the renderer can merge them with a snapshot. */
 export interface ChatEventEnvelope {
@@ -87,6 +108,8 @@ export interface ConversationSummary {
   updatedAt: string
   /** An agent is replying in this conversation right now. */
   busy: boolean
+  /** Dialogue mode is on. */
+  dialogue: boolean
 }
 
 export type SendTarget = 'all' | AgentId
@@ -121,6 +144,8 @@ export interface AgentSyncApi {
   setEffort(conversationId: string, agent: AgentId, effort: string | null): Promise<void>
   send(conversationId: string, request: SendRequest): Promise<void>
   stop(conversationId: string): Promise<void>
+  /** Turns dialogue mode on or off. */
+  setDialogue(conversationId: string, on: boolean): Promise<void>
   onEvent(listener: (envelope: ConversationEventEnvelope) => void): () => void
   onConversations(listener: (conversations: ConversationSummary[]) => void): () => void
   onMenuCommand(listener: (command: MenuCommand) => void): () => void
@@ -135,4 +160,5 @@ export const DISPLAY_NAMES: Record<Sender, string> = {
   user: 'あなた',
   claude: 'Claude',
   gpt: 'GPT',
+  system: 'AgentSync',
 }
