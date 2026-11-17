@@ -35,6 +35,23 @@ export function parseEffort(raw: unknown): string | null {
   return raw
 }
 
+/**
+ * Model aliases and IDs (`sonnet`, `opus[1m]`, `claude-haiku-4-5-20251001`, `gpt-6.1-sol`). They are passed to
+ * the CLIs as arguments, so they must not start with `-`.
+ */
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,99}$/
+
+export function isModel(value: unknown): value is string {
+  return typeof value === 'string' && MODEL.test(value)
+}
+
+/** Validates a model that arrived over IPC. Null means 「the CLI's own setting」. */
+export function parseModel(raw: unknown): string | null {
+  if (raw === null) return null
+  if (!isModel(raw)) throw new Error('モデルの指定が不正です')
+  return raw
+}
+
 /** Validates a send request that arrived over IPC. Throws on anything unexpected. */
 export function parseSendRequest(raw: unknown): SendRequest {
   if (typeof raw !== 'object' || raw === null) throw new Error('不正なリクエストです')

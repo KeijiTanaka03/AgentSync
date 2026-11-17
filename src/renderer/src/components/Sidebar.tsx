@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ConversationSummary } from '../../../shared/types'
-import { LoopIcon, MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
+import { BrandMark, LoopIcon, MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
 
@@ -54,7 +54,10 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onRename,
 
   return (
     <nav className="sidebar" aria-label="会話一覧">
-      <div className="brand">AgentSync</div>
+      <div className="brand">
+        <BrandMark />
+        AgentSync
+      </div>
       <button type="button" className="new-conversation" onClick={onCreate}>
         <PlusIcon />
         新しい会話

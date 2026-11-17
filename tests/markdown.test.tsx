@@ -14,6 +14,17 @@ describe('MarkdownText', () => {
     expect(html('```ts\nconst a = 1\n```')).toContain('<code class="language-ts">')
   })
 
+  it('puts the language and a copy button above a code block', () => {
+    const out = html('```ts\nconst a = 1\n```')
+    expect(out).toContain('<span class="code-block-language">ts</span>')
+    expect(out).toContain('aria-label="コピー"')
+    expect(html('```\nplain\n```')).toContain('<span class="code-block-language"></span>')
+  })
+
+  it('keeps single line breaks, as a chat shows them', () => {
+    expect(html('1 行目\n2 行目')).toContain('1 行目<br/>\n2 行目')
+  })
+
   it('does not render raw HTML from a reply', () => {
     const out = html('<img src=x onerror="alert(1)"> と <script>alert(1)</script>')
     expect(out).not.toContain('<img')

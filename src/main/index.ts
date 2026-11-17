@@ -1,16 +1,16 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from 'electron'
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { AgentId, MenuCommand } from '../shared/types'
-import { parseAgentId, parseConversationId, parseEffort, parseSendRequest, parseTitle } from '../shared/validate'
+import { parseAgentId, parseConversationId, parseEffort, parseModel, parseSendRequest, parseTitle } from '../shared/validate'
 import { ClaudeAdapter } from './agents/claude'
 import { CodexAdapter } from './agents/codex'
 import { StdioRpcConnection } from './agents/jsonRpc'
 import { ChatManager } from './chat/manager'
 import { childEnv, findExecutable, loadLoginShellPath } from './env'
 import { ConversationStore } from './store/conversationStore'
-import { SettingsStore } from './store/settingsStore'
+import { SettingsStore, type CliName } from './store/settingsStore'
 
 app.setName('AgentSync')
 
@@ -27,6 +27,10 @@ if (!app.isPackaged) {
 
 let mainWindow: BrowserWindow | null = null
 let manager: ChatManager | null = null
+let settings: SettingsStore | null = null
+let codexAdapter: CodexAdapter | null = null
+
+const CLI_LABELS: Record<CliName, string> = { claude: 'Claude Code CLI', codex: 'Codex CLI' }
 
 /** Only http(s) links leave the app, and they open in the default browser. */
 function openExternally(url: string): void {
@@ -38,12 +42,71 @@ function openExternally(url: string): void {
   }
 }
 
-async function requireExecutable(name: string, label: string, override?: string): Promise<string> {
-  const found = await findExecutable(name, override)
+/** A CLI chosen with 「CLI の場所…」 (or, for development, an environment variable). */
+function chosenCliPath(name: CliName): string | undefined {
+  const fromEnv = name === 'claude' ? process.env.AGENTSYNC_CLAUDE_PATH : process.env.AGENTSYNC_CODEX_PATH
+  return fromEnv || settings?.load().cliPaths[name] || undefined
+}
+
+async function requireExecutable(name: CliName): Promise<string> {
+  const chosen = chosenCliPath(name)
+  const found = await findExecutable(name, chosen)
   if (found) return found
+  const label = CLI_LABELS[name]
   throw new Error(
-    `${label}（${name}）が見つかりません。インストールしてログインしてから、AgentSync を起動し直してください。`,
+    chosen
+      ? `指定した場所（${chosen}）に ${label} が見つかりません。アプリのメニューの「AgentSync > CLI の場所…」で指定し直してください。`
+      : `${label}（${name}）が見つかりません。インストールしてログインしてから、アプリのメニューの「AgentSync > CLI の場所…」で場所を指定してください。`,
   )
+}
+
+/** 「CLI の場所…」: shows where each CLI is and lets you pick another executable. */
+async function showCliLocations(): Promise<void> {
+  const window = showWindow()
+  const store = settings
+  if (!store) return
+  const describe = async (name: CliName): Promise<string> => {
+    const chosen = store.load().cliPaths[name]
+    const found = await findExecutable(name, chosen ?? undefined)
+    if (chosen) return found ? `${chosen}（指定）` : `${chosen}（指定した場所にありません）`
+    return found ? `${found}（自動で見つけました）` : '見つかりません'
+  }
+  for (;;) {
+    const [claude, codex] = await Promise.all([describe('claude'), describe('codex')])
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'info',
+      message: 'CLI の場所',
+      detail: `Claude Code: ${claude}\nCodex: ${codex}\n\nCLI が見つからないときや、別の場所にあるものを使いたいときに指定します。`,
+      buttons: ['閉じる', 'Claude Code を選ぶ…', 'Codex を選ぶ…', '自動で探すに戻す'],
+      defaultId: 0,
+      cancelId: 0,
+    })
+    if (response === 0) return
+    if (response === 3) {
+      store.update((next) => {
+        next.cliPaths = { claude: null, codex: null }
+      })
+      codexAdapter?.dispose() // the next reply starts Codex again from wherever it is found
+      continue
+    }
+    const name: CliName = response === 1 ? 'claude' : 'codex'
+    const picked = await dialog.showOpenDialog(window, {
+      title: `${CLI_LABELS[name]} を選ぶ`,
+      message: `${name} の実行ファイルを選んでください（例: /opt/homebrew/bin/${name}）`,
+      defaultPath: '/opt/homebrew/bin',
+      properties: ['openFile', 'showHiddenFiles', 'treatPackageAsDirectory'],
+    })
+    const file = picked.filePaths[0]
+    if (picked.canceled || !file) continue
+    if (!(await findExecutable(name, file))) {
+      await dialog.showMessageBox(window, { type: 'warning', message: '実行できるファイルではありません', detail: file })
+      continue
+    }
+    store.update((next) => {
+      next.cliPaths[name] = file
+    })
+    if (name === 'codex') codexAdapter?.dispose()
+  }
 }
 
 /** Optional model overrides for development, e.g. AGENTSYNC_CLAUDE_MODEL=haiku. */
@@ -61,34 +124,41 @@ function createManager(): ChatManager {
   const chatDirectory = path.join(dataDirectory, 'chat-workdir')
   mkdirSync(chatDirectory, { recursive: true })
 
+  // Models, efforts and CLI locations chosen in the app. The last model and effort chosen for each AI
+  // carry over to new conversations.
+  const store = new SettingsStore(path.join(dataDirectory, 'settings.json'))
+  settings = store
+  const saved = store.load()
+  const remember = (change: Parameters<SettingsStore['update']>[0]) => {
+    try {
+      store.update(change)
+    } catch (error) {
+      console.error('[settings] could not save:', error)
+    }
+  }
+
   const claude = new ClaudeAdapter({
-    resolveBinary: () => requireExecutable('claude', 'Claude Code CLI', process.env.AGENTSYNC_CLAUDE_PATH),
+    resolveBinary: () => requireExecutable('claude'),
     env: () => childEnv(),
+    listCwd: chatDirectory,
   })
   const gpt = new CodexAdapter({
     clientVersion: app.getVersion(),
     connect: async () => {
-      const binary = await requireExecutable('codex', 'Codex CLI', process.env.AGENTSYNC_CODEX_PATH)
+      const binary = await requireExecutable('codex')
       return new StdioRpcConnection(binary, ['app-server'], { cwd: chatDirectory, env: childEnv() })
     },
   })
-
-  // The last effort chosen for each AI carries over to new conversations.
-  const settings = new SettingsStore(path.join(dataDirectory, 'settings.json'))
+  codexAdapter = gpt
 
   return new ChatManager({
     store: new ConversationStore(path.join(dataDirectory, 'conversations')),
     adapters: { claude, gpt },
     cwd: chatDirectory,
-    models: { claude: modelFromEnv('claude'), gpt: modelFromEnv('gpt') },
-    efforts: settings.load().efforts,
-    onEffortsChange: (efforts) => {
-      try {
-        settings.save({ efforts })
-      } catch (error) {
-        console.error('[settings] could not save:', error)
-      }
-    },
+    models: { claude: modelFromEnv('claude') ?? saved.models.claude, gpt: modelFromEnv('gpt') ?? saved.models.gpt },
+    efforts: saved.efforts,
+    onModelsChange: (models) => remember((next) => void (next.models = models)),
+    onEffortsChange: (efforts) => remember((next) => void (next.efforts = efforts)),
     emitEvent: (envelope) => broadcast('chat:event', envelope),
     emitConversations: (conversations) => broadcast('conversations:changed', conversations),
   })
@@ -175,6 +245,8 @@ function buildMenu(): Menu {
       submenu: [
         { role: 'about', label: `${name} について` },
         { type: 'separator' },
+        { label: 'CLI の場所…', click: () => void showCliLocations() },
+        { type: 'separator' },
         { role: 'services', label: 'サービス' },
         { type: 'separator' },
         { role: 'hide', label: `${name} を隠す` },
@@ -188,6 +260,9 @@ function buildMenu(): Menu {
       label: 'ファイル',
       submenu: [
         { label: '新規会話', accelerator: 'CmdOrCtrl+N', click: () => sendMenuCommand('new-conversation') },
+        { type: 'separator' },
+        { label: '対話モードを切り替える', accelerator: 'Shift+CmdOrCtrl+D', click: () => sendMenuCommand('toggle-dialogue') },
+        { label: '返事を止める', accelerator: 'CmdOrCtrl+.', click: () => sendMenuCommand('stop') },
         { type: 'separator' },
         { role: 'close', label: 'ウインドウを閉じる' },
       ],
@@ -268,6 +343,9 @@ function registerIpc(): void {
   ipcMain.handle('agents:effort', (event, id: unknown, agent: unknown, effort: unknown) => {
     fromMainWindow(event).setEffort(parseConversationId(id), parseAgentId(agent), parseEffort(effort))
   })
+  ipcMain.handle('agents:model', (event, id: unknown, agent: unknown, model: unknown) => {
+    fromMainWindow(event).setModel(parseConversationId(id), parseAgentId(agent), parseModel(model))
+  })
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -277,6 +355,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => showWindow())
 
   void app.whenReady().then(async () => {
+    // The page needs no browser permissions except copying to the clipboard.
+    const allowed = (permission: string) => permission === 'clipboard-sanitized-write'
+    session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed(permission)))
+    session.defaultSession.setPermissionCheckHandler((_contents, permission) => allowed(permission))
+
     await loadLoginShellPath()
     manager = createManager()
     registerIpc()

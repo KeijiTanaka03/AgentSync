@@ -88,6 +88,7 @@ export class Orchestrator {
           info: {
             id,
             model: saved ? saved.model : (options.models?.[id] ?? null),
+            activeModel: null,
             effort: saved ? saved.effort : (options.efforts?.[id] ?? null),
             busy: false,
             activity: null,
@@ -192,6 +193,17 @@ export class Orchestrator {
   setEffort(id: AgentId, effort: string | null): void {
     if (this.agents[id].info.effort === effort) return
     this.updateAgent(id, { effort })
+  }
+
+  /** Chooses an agent's model; applies from its next reply. Null leaves it to the CLI. */
+  setModel(id: AgentId, model: string | null): void {
+    if (this.agents[id].info.model === model) return
+    // The CLI says which model it uses once the next reply starts.
+    this.updateAgent(id, { model, activeModel: null })
+  }
+
+  info(id: AgentId): AgentInfo {
+    return { ...this.agents[id].info }
   }
 
   /** What can be chosen for an agent with its current model. */
@@ -312,7 +324,7 @@ export class Orchestrator {
           agent.sessionId = sessionId
         },
         onModel: (model) => {
-          if (model !== agent.info.model) this.updateAgent(id, { model })
+          if (model !== agent.info.activeModel) this.updateAgent(id, { activeModel: model })
         },
         onActivity: (activity) => {
           if (!controller.signal.aborted) this.setActivity(id, activity)

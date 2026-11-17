@@ -48,8 +48,10 @@ export interface AgentActivity {
 
 export interface AgentInfo {
   id: AgentId
-  /** Model reported by the CLI, once known. */
+  /** Model chosen in AgentSync (an alias such as `sonnet`, or an ID). Null leaves it to the CLI's own setting. */
   model: string | null
+  /** The model the CLI says it is using, once a reply has started. */
+  activeModel: string | null
   /** Reasoning effort chosen in AgentSync (e.g. `low`). Null leaves it to the CLI's own setting. */
   effort: string | null
   busy: boolean
@@ -119,16 +121,30 @@ export interface SendRequest {
   to: SendTarget
 }
 
+/** A model an agent's CLI offers. */
+export interface ModelChoice {
+  /** What is passed to the CLI (`sonnet`, `gpt-6.1-sol`, …). */
+  value: string
+  label: string
+  description: string | null
+}
+
 /** What can be chosen for an agent in the header menu. */
 export interface AgentChoices {
-  /** Reasoning efforts the CLI accepts for the current model, from lightest to deepest. */
+  /** The models the CLI offers, as it lists them. */
+  models: ModelChoice[]
+  /** The model used when none is chosen (a label), when the CLI says. */
+  defaultModel: string | null
+  /** Whether another model ID can be typed in (Claude Code accepts any). */
+  customModel: boolean
+  /** Reasoning efforts for the conversation's current model, from lightest to deepest. */
   efforts: string[]
-  /** The effort the CLI uses when none is chosen, when it says (Codex does; Claude Code does not). */
+  /** The effort used when none is chosen, when the CLI says (Codex does; Claude Code does not). */
   defaultEffort: string | null
 }
 
 /** Commands sent from the app menu to the renderer. */
-export type MenuCommand = 'new-conversation'
+export type MenuCommand = 'new-conversation' | 'toggle-dialogue' | 'stop'
 
 /** The API the preload script exposes to the renderer as `window.agentsync`. */
 export interface AgentSyncApi {
@@ -142,6 +158,8 @@ export interface AgentSyncApi {
   agentChoices(conversationId: string, agent: AgentId): Promise<AgentChoices>
   /** Applies from the agent's next reply, and becomes the default for new conversations. */
   setEffort(conversationId: string, agent: AgentId, effort: string | null): Promise<void>
+  /** Like `setEffort`. An effort the new model does not accept goes back to the CLI's own setting. */
+  setModel(conversationId: string, agent: AgentId, model: string | null): Promise<void>
   send(conversationId: string, request: SendRequest): Promise<void>
   stop(conversationId: string): Promise<void>
   /** Turns dialogue mode on or off. */

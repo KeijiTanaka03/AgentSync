@@ -28,6 +28,8 @@ const api: AgentSyncApi = {
   agentChoices: (id: string, agent: AgentId) => ipcRenderer.invoke('agents:choices', id, agent) as Promise<AgentChoices>,
   setEffort: (id: string, agent: AgentId, effort: string | null) =>
     ipcRenderer.invoke('agents:effort', id, agent, effort) as Promise<void>,
+  setModel: (id: string, agent: AgentId, model: string | null) =>
+    ipcRenderer.invoke('agents:model', id, agent, model) as Promise<void>,
   send: (id: string, request: SendRequest) => ipcRenderer.invoke('chat:send', id, request) as Promise<void>,
   stop: (id: string) => ipcRenderer.invoke('chat:stop', id) as Promise<void>,
   setDialogue: (id: string, on: boolean) => ipcRenderer.invoke('chat:dialogue', id, on) as Promise<void>,

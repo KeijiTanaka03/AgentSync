@@ -27,6 +27,8 @@ export interface ChatManagerOptions {
   efforts?: Partial<Record<AgentId, string | null>>
   /** Called when a different effort is chosen, so it can be kept for new conversations. */
   onEffortsChange?(efforts: Record<AgentId, string | null>): void
+  /** Likewise for models. */
+  onModelsChange?(models: Record<AgentId, string | null>): void
   now?: () => Date
   /** How long to wait after a change before writing the file. */
   saveDelayMs?: number
@@ -54,11 +56,13 @@ export class ChatManager {
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly efforts: Record<AgentId, string | null>
+  private readonly models: Record<AgentId, string | null>
 
   constructor(private readonly options: ChatManagerOptions) {
     this.now = options.now ?? (() => new Date())
     this.newId = options.newId ?? defaultId
     this.efforts = Object.fromEntries(AGENT_IDS.map((id) => [id, options.efforts?.[id] ?? null])) as Record<AgentId, string | null>
+    this.models = Object.fromEntries(AGENT_IDS.map((id) => [id, options.models?.[id] ?? null])) as Record<AgentId, string | null>
     for (const data of options.store.list()) {
       this.entries.set(data.id, {
         id: data.id,
@@ -87,8 +91,11 @@ export class ChatManager {
   create(): string {
     for (const entry of this.entries.values()) {
       if (entry.orchestrator?.isEmpty && entry.title === DEFAULT_TITLE) {
-        // It may have been opened before another effort was chosen elsewhere.
-        for (const agent of AGENT_IDS) entry.orchestrator.setEffort(agent, this.efforts[agent])
+        // It may have been opened before another model or effort was chosen elsewhere.
+        for (const agent of AGENT_IDS) {
+          entry.orchestrator.setModel(agent, this.models[agent])
+          entry.orchestrator.setEffort(agent, this.efforts[agent])
+        }
         entry.updatedAt = this.now().toISOString()
         this.publishList()
         return entry.id
@@ -114,6 +121,29 @@ export class ChatManager {
     if (this.efforts[agent] === effort) return
     this.efforts[agent] = effort
     this.options.onEffortsChange?.({ ...this.efforts })
+  }
+
+  /**
+   * Chooses an agent's model in one conversation; new conversations start with it too. An effort the
+   * new model does not accept goes back to the CLI's own setting.
+   */
+  setModel(id: string, agent: AgentId, model: string | null): void {
+    const orchestrator = this.orchestrator(id)
+    orchestrator.setModel(agent, model)
+    if (this.models[agent] !== model) {
+      this.models[agent] = model
+      this.options.onModelsChange?.({ ...this.models })
+    }
+    void orchestrator.choices(agent).then(
+      (choices) => {
+        const { effort } = orchestrator.info(agent)
+        if (!this.entries.has(id) || effort === null || choices.efforts.length === 0) return
+        if (!choices.efforts.includes(effort)) this.setEffort(id, agent, null)
+      },
+      () => {
+        // The CLI could not say; the effort stays as it is.
+      },
+    )
   }
 
   agentChoices(id: string, agent: AgentId): Promise<AgentChoices> {
@@ -199,7 +229,7 @@ export class ChatManager {
     return new Orchestrator({
       adapters: this.options.adapters,
       cwd: this.options.cwd,
-      models: this.options.models,
+      models: { ...this.models },
       efforts: { ...this.efforts },
       now: this.now,
       ...(data ? { initial: data } : {}),

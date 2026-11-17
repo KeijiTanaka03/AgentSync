@@ -1,51 +1,83 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { AGENT_IDS, type AgentId } from '../../shared/types'
-import { isEffort } from '../../shared/validate'
+import { isEffort, isModel } from '../../shared/validate'
 
-/** App-wide choices that carry over to new conversations. */
+/** The CLIs AgentSync runs. */
+export type CliName = 'claude' | 'codex'
+
+/** App-wide choices. */
 export interface Settings {
-  /** The last reasoning effort chosen for each agent (null: the CLI's own setting). */
+  /** The last model chosen for each agent; new conversations start with it (null: the CLI's own setting). */
+  models: Record<AgentId, string | null>
+  /** The last reasoning effort chosen for each agent, likewise. */
   efforts: Record<AgentId, string | null>
+  /** Executables chosen with 「CLI の場所…」 (null: look on PATH). */
+  cliPaths: Record<CliName, string | null>
 }
 
 const FORMAT_VERSION = 1
 
+const perAgent = (): Record<AgentId, string | null> =>
+  Object.fromEntries(AGENT_IDS.map((id) => [id, null])) as Record<AgentId, string | null>
+
 export function defaultSettings(): Settings {
-  return { efforts: Object.fromEntries(AGENT_IDS.map((id) => [id, null])) as Record<AgentId, string | null> }
+  return { models: perAgent(), efforts: perAgent(), cliPaths: { claude: null, codex: null } }
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
 /** Reads a settings file, keeping whatever is valid. */
 export function parseSettings(raw: unknown): Settings {
   const settings = defaultSettings()
-  if (typeof raw !== 'object' || raw === null) return settings
-  const { version, efforts } = raw as Record<string, unknown>
-  if (version !== FORMAT_VERSION || typeof efforts !== 'object' || efforts === null) return settings
+  if (!isRecord(raw) || raw.version !== FORMAT_VERSION) return settings
+  const { models, efforts, cliPaths } = raw
   for (const id of AGENT_IDS) {
-    const effort = (efforts as Record<string, unknown>)[id]
-    if (isEffort(effort)) settings.efforts[id] = effort
+    if (isRecord(models) && isModel(models[id])) settings.models[id] = models[id]
+    if (isRecord(efforts) && isEffort(efforts[id])) settings.efforts[id] = efforts[id]
+  }
+  for (const name of ['claude', 'codex'] as const) {
+    const value = isRecord(cliPaths) ? cliPaths[name] : null
+    if (typeof value === 'string' && path.isAbsolute(value)) settings.cliPaths[name] = value
   }
   return settings
 }
 
 /** `settings.json` in the app's data folder: written atomically and readable only by the user. */
 export class SettingsStore {
-  constructor(readonly file: string) {}
+  private current: Settings
+
+  constructor(readonly file: string) {
+    this.current = this.read()
+  }
 
   /** The saved settings; defaults when there is no file yet or it cannot be read. */
   load(): Settings {
-    try {
-      return parseSettings(JSON.parse(readFileSync(this.file, 'utf8')))
-    } catch {
-      return defaultSettings()
-    }
+    return structuredClone(this.current)
+  }
+
+  /** Changes some settings and writes the file. */
+  update(change: (settings: Settings) => void): Settings {
+    const next = this.load()
+    change(next)
+    this.save(next)
+    return this.load()
   }
 
   save(settings: Settings): void {
     mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 })
     const temporary = `${this.file}.tmp`
-    const data = { version: FORMAT_VERSION, efforts: settings.efforts }
+    const data = { version: FORMAT_VERSION, ...settings }
     writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
     renameSync(temporary, this.file)
+    this.current = structuredClone(settings)
+  }
+
+  private read(): Settings {
+    try {
+      return parseSettings(JSON.parse(readFileSync(this.file, 'utf8')))
+    } catch {
+      return defaultSettings()
+    }
   }
 }

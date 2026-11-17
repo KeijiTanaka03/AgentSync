@@ -12,8 +12,9 @@ class FakeAppServer implements RpcConnection {
   readonly requests: { method: string; params: any }[] = []
   readonly notifications: string[] = []
   disposed = false
-  /** `model_reasoning_effort` in the user's Codex settings. */
+  /** `model_reasoning_effort` and `model` in the user's Codex settings. */
   configuredEffort: string | null = 'xhigh'
+  configuredModel: string | null = null
   private turnCount = 0
 
   async request<T>(method: string, params?: unknown): Promise<T> {
@@ -31,12 +32,13 @@ class FakeAppServer implements RpcConnection {
       case 'turn/interrupt':
         return {} as T
       case 'config/read':
-        return { config: { model_reasoning_effort: this.configuredEffort } } as T
+        return { config: { model: this.configuredModel, model_reasoning_effort: this.configuredEffort } } as T
       case 'model/list':
         return {
           data: [
-            { model: 'gpt-6.1-sol', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map((reasoningEffort) => ({ reasoningEffort })) },
-            { model: 'gpt-6-luna', isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: ['low', 'medium'].map((reasoningEffort) => ({ reasoningEffort })) },
+            { model: 'gpt-6.1-sol', displayName: 'GPT-6.1 Sol', description: 'Frontier', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map((reasoningEffort) => ({ reasoningEffort })) },
+            { model: 'gpt-6-luna', displayName: 'GPT-6 Luna', description: 'Fast', isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: ['low', 'medium'].map((reasoningEffort) => ({ reasoningEffort })) },
+            { model: 'gpt-internal', displayName: 'Internal', hidden: true, isDefault: false, defaultReasoningEffort: 'low', supportedReasoningEfforts: [] },
           ],
           nextCursor: null,
         } as T
@@ -191,12 +193,46 @@ describe('CodexAdapter', () => {
     expect(server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({ threadId: 'thread-9', effort: 'xhigh' })
   })
 
-  it('lists the efforts of the model, with the CLI setting as the default', async () => {
+  it('lists the models and the efforts of the model in use, with the CLI settings as 「自動」', async () => {
     const { server, adapter } = setup()
-    await expect(adapter.choices(null)).resolves.toEqual({ efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'xhigh' })
+    await expect(adapter.choices(null)).resolves.toEqual({
+      models: [
+        { value: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', description: 'Frontier' },
+        { value: 'gpt-6-luna', label: 'GPT-6 Luna', description: 'Fast' },
+      ],
+      defaultModel: 'GPT-6.1 Sol',
+      customModel: false,
+      efforts: ['low', 'medium', 'high', 'xhigh'],
+      defaultEffort: 'xhigh',
+    })
     // The configured effort does not exist for this model: its own default is used.
-    await expect(adapter.choices('gpt-6-luna')).resolves.toEqual({ efforts: ['low', 'medium'], defaultEffort: 'medium' })
+    await expect(adapter.choices('gpt-6-luna')).resolves.toMatchObject({ efforts: ['low', 'medium'], defaultEffort: 'medium' })
     expect(server.requests.filter((r) => r.method === 'model/list')).toHaveLength(1) // read once
+  })
+
+  it('takes the configured model as 「自動」', async () => {
+    const { server, adapter } = setup()
+    server.configuredModel = 'gpt-6-luna'
+    await expect(adapter.choices(null)).resolves.toMatchObject({ defaultModel: 'GPT-6 Luna', efforts: ['low', 'medium'] })
+  })
+
+  it('switches the model of a thread with the turn, and names the CLI model again for 「自動」', async () => {
+    const { server, adapter } = setup()
+    const turn = async (model: string | null, sessionId: string | null) => {
+      const { req, models } = request({ model, sessionId })
+      const done = adapter.run(req)
+      await flush()
+      await flush()
+      server.push('turn/completed', { turn: { id: `turn-${server.requests.filter((r) => r.method === 'turn/start').length}`, status: 'completed', error: null } })
+      await done
+      return { params: server.requests.filter((r) => r.method === 'turn/start').at(-1)!.params, models }
+    }
+    expect((await turn(null, null)).params).not.toHaveProperty('model')
+    const luna = await turn('gpt-6-luna', 'thread-1')
+    expect(luna.params).toMatchObject({ model: 'gpt-6-luna', effort: 'medium' }) // xhigh is not offered by luna
+    expect(luna.models).toEqual(['gpt-6-luna'])
+    expect((await turn('gpt-6-luna', 'thread-1')).params).not.toHaveProperty('model') // already set
+    expect((await turn(null, 'thread-1')).params).toMatchObject({ model: 'gpt-6.1-sol', effort: 'xhigh' })
   })
 
   it('falls back to the model default when nothing is configured', async () => {

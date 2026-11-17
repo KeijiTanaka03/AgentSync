@@ -104,3 +104,36 @@ export function LoopIcon(props: IconProps) {
     </Icon>
   )
 }
+
+export function CopyIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="8" y="8" width="12" height="12" rx="2.5" />
+      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+    </Icon>
+  )
+}
+
+export function ArrowDownIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14M5 12l7 7 7-7" />
+    </Icon>
+  )
+}
+
+/** The app's mark: the two speech bubbles of the icon, in Claude's and GPT's colours. */
+export function BrandMark({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="170 200 700 660" fill="none" strokeWidth="44" strokeLinejoin="round" aria-hidden="true">
+      <path
+        stroke="var(--claude)"
+        d="M330 230 H530 A120 120 0 0 1 650 350 V420 A120 120 0 0 1 530 540 H356 C322 574 262 598 204 608 C222 566 214 506 214 452 V350 A120 120 0 0 1 330 230 Z"
+      />
+      <path
+        stroke="var(--gpt)"
+        d="M494 446 H694 A120 120 0 0 1 814 566 V656 C814 714 822 772 840 818 C788 804 740 784 706 752 H494 A120 120 0 0 1 374 632 V566 A120 120 0 0 1 494 446 Z"
+      />
+    </svg>
+  )
+}

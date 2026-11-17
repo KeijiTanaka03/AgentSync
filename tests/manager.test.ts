@@ -19,6 +19,7 @@ function setup(directory = mkdtempSync(path.join(tmpdir(), 'agentsync-manager-')
   const events: ConversationEventEnvelope[] = []
   const lists: ConversationSummary[][] = []
   const savedEfforts: Record<string, string | null>[] = []
+  const savedModels: Record<string, string | null>[] = []
   let clock = Date.parse('2026-11-16T05:00:00.000Z')
   let nextId = 1
   const store = new ConversationStore(path.join(directory, 'conversations'))
@@ -33,10 +34,11 @@ function setup(directory = mkdtempSync(path.join(tmpdir(), 'agentsync-manager-')
     newId: () => `c${nextId++}`,
     efforts,
     onEffortsChange: (next) => savedEfforts.push(next),
+    onModelsChange: (next) => savedModels.push(next),
   })
   const file = (id: string) => path.join(directory, 'conversations', `${id}.json`)
   const read = (id: string) => JSON.parse(readFileSync(file(id), 'utf8'))
-  return { directory, claude, gpt, events, lists, manager, file, read, savedEfforts }
+  return { directory, claude, gpt, events, lists, manager, file, read, savedEfforts, savedModels }
 }
 
 describe('ChatManager', () => {
@@ -192,5 +194,20 @@ describe('ChatManager', () => {
     const saved = read(id)
     expect(saved.messages.at(-1)).toMatchObject({ from: 'system', notice: 'dialogue-stop' })
     expect(saved.messages.at(-2)).toMatchObject({ from: 'claude', to: 'gpt' })
+  })
+  it('keeps a chosen model for new conversations, and drops an effort the new model does not take', async () => {
+    const { manager, savedModels, savedEfforts } = setup()
+    const first = manager.create()
+    manager.setEffort(first, 'claude', 'high')
+    manager.setModel(first, 'claude', 'tiny') // the fake CLI's 「tiny」 only takes low
+    await settle()
+    expect(savedModels).toEqual([{ claude: 'tiny', gpt: null }])
+    expect(manager.snapshot(first).state.agents.claude).toMatchObject({ model: 'tiny', effort: null })
+    expect(savedEfforts.at(-1)).toEqual({ claude: null, gpt: null })
+
+    manager.setModel(first, 'claude', 'big')
+    manager.setEffort(first, 'claude', 'high')
+    await settle()
+    expect(manager.snapshot(first).state.agents.claude).toMatchObject({ model: 'big', effort: 'high' }) // big takes high
   })
 })

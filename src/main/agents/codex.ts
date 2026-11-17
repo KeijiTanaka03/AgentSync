@@ -16,6 +16,9 @@ interface TurnStartResponse {
 
 interface CodexModel {
   model: string
+  displayName?: string
+  description?: string
+  hidden?: boolean
   isDefault: boolean
   supportedReasoningEfforts: { reasoningEffort: string }[]
   defaultReasoningEffort: string
@@ -27,7 +30,27 @@ interface ModelListResponse {
 }
 
 interface ConfigReadResponse {
-  config: { model_reasoning_effort?: string | null }
+  config: { model?: string | null; model_reasoning_effort?: string | null }
+}
+
+/** What the user's Codex configuration sets, if anything. */
+interface CodexConfig {
+  model: string | null
+  effort: string | null
+}
+
+/** The model and effort a thread runs at. Null: the CLI's own setting. */
+interface ThreadSettings {
+  model: string | null
+  effort: string | null
+}
+
+/** What to send with a turn so that the thread runs at the chosen settings. */
+interface TurnOverrides {
+  model?: string
+  effort?: string
+  /** False when the CLI's own setting could not be named; the thread's settings are then still unknown. */
+  complete: boolean
 }
 
 interface TurnCompletedParams {
@@ -71,6 +94,23 @@ function itemActivity(item: Json): AgentActivity | null {
 }
 
 /**
+ * What 「自動」 means for a model: the configured or default model, and the effort the configuration sets
+ * if that model accepts it (otherwise the model's own default).
+ */
+function resolveDefaults(
+  models: CodexModel[],
+  config: CodexConfig,
+  model: string | null,
+): { model: string | null; effort: string | null; efforts: string[] } {
+  const defaultModel = config.model ?? models.find((m) => m.isDefault)?.model ?? null
+  const entry = models.find((m) => m.model === (model ?? defaultModel)) ?? models.find((m) => m.isDefault) ?? models[0]
+  const efforts = entry ? entry.supportedReasoningEfforts.map((e) => e.reasoningEffort) : []
+  const effort =
+    config.effort && (efforts.length === 0 || efforts.includes(config.effort)) ? config.effort : (entry?.defaultReasoningEffort ?? null)
+  return { model: defaultModel, effort, efforts }
+}
+
+/**
  * Talks to one long-running `codex app-server` process.
  * Each conversation is a Codex thread; each reply is one turn.
  */
@@ -80,13 +120,13 @@ export class CodexAdapter implements AgentAdapter {
   private readonly loadedThreads = new Set<string>()
   private readonly threadListeners = new Map<string, ThreadListener>()
   /**
-   * The effort last set on each loaded thread (null: the CLI's own setting). Codex keeps an effort given
-   * with a turn for the later turns too. A thread resumed from an earlier run is not listed: unknown.
+   * The model and effort each loaded thread runs at, as last set in this process. Codex keeps a model or
+   * effort given with a turn for the later turns too. A thread resumed from an earlier run is not listed: unknown.
    */
-  private readonly threadEfforts = new Map<string, string | null>()
+  private readonly threadSettings = new Map<string, ThreadSettings>()
   /** Read once per app-server process. */
   private models: Promise<CodexModel[]> | null = null
-  private configuredEffort: Promise<string | null> | null = null
+  private config: Promise<CodexConfig> | null = null
 
   constructor(private readonly options: CodexAdapterOptions) {}
 
@@ -108,7 +148,7 @@ export class CodexAdapter implements AgentAdapter {
       const started = await rpc.request<ThreadResponse>('thread/start', threadSettings)
       threadId = started.thread.id
       this.loadedThreads.add(threadId)
-      this.threadEfforts.set(threadId, null)
+      this.threadSettings.set(threadId, { model: request.model, effort: null })
       request.onSession(threadId)
       request.onModel(started.model)
     } else if (!this.loadedThreads.has(threadId)) {
@@ -117,17 +157,24 @@ export class CodexAdapter implements AgentAdapter {
       request.onModel(resumed.model)
     }
 
-    const effort = await this.turnEffort(threadId, request)
-    return this.runTurn(rpc, threadId, request, effort)
+    const overrides = await this.turnOverrides(threadId, request)
+    return this.runTurn(rpc, threadId, request, overrides)
   }
 
   async choices(model: string | null): Promise<AgentChoices> {
     const rpc = await this.connect()
-    const [models, configured] = await Promise.all([this.listModels(rpc), this.readConfiguredEffort(rpc)])
-    const entry = models.find((m) => m.model === model) ?? models.find((m) => m.isDefault) ?? models[0]
-    const efforts = entry ? entry.supportedReasoningEfforts.map((e) => e.reasoningEffort) : []
-    const defaultEffort = configured && (efforts.length === 0 || efforts.includes(configured)) ? configured : (entry?.defaultReasoningEffort ?? null)
-    return { efforts, defaultEffort }
+    const [models, config] = await Promise.all([this.listModels(rpc), this.readConfig(rpc)])
+    const defaults = resolveDefaults(models, config, model)
+    const defaultEntry = models.find((m) => m.model === defaults.model)
+    return {
+      models: models
+        .filter((m) => !m.hidden)
+        .map((m) => ({ value: m.model, label: m.displayName || m.model, description: m.description || null })),
+      defaultModel: defaultEntry ? defaultEntry.displayName || defaultEntry.model : defaults.model,
+      customModel: false,
+      efforts: defaults.efforts,
+      defaultEffort: defaults.effort,
+    }
   }
 
   dispose(): void {
@@ -175,9 +222,9 @@ export class CodexAdapter implements AgentAdapter {
   /** What a new app-server process will not know: loaded threads and what was read from Codex. */
   private forgetProcess(): void {
     this.loadedThreads.clear()
-    this.threadEfforts.clear()
+    this.threadSettings.clear()
     this.models = null
-    this.configuredEffort = null
+    this.config = null
   }
 
   private listModels(rpc: RpcConnection): Promise<CodexModel[]> {
@@ -198,31 +245,38 @@ export class CodexAdapter implements AgentAdapter {
     return this.models
   }
 
-  /** `model_reasoning_effort` from the user's Codex configuration, if set. */
-  private readConfiguredEffort(rpc: RpcConnection): Promise<string | null> {
-    this.configuredEffort ??= rpc
+  /** `model` and `model_reasoning_effort` from the user's Codex configuration, if set. */
+  private readConfig(rpc: RpcConnection): Promise<CodexConfig> {
+    this.config ??= rpc
       .request<ConfigReadResponse>('config/read', {})
-      .then((response) => response.config.model_reasoning_effort ?? null)
-      .catch(() => null)
-    return this.configuredEffort
+      .then((response) => ({ model: response.config.model ?? null, effort: response.config.model_reasoning_effort ?? null }))
+      .catch(() => ({ model: null, effort: null }))
+    return this.config
   }
 
   /**
-   * The effort to send with this turn. A chosen effort is sent as is. For the CLI's own setting, nothing is
-   * sent to a thread that never had another effort; otherwise the setting is named, since Codex would keep
-   * the earlier one.
+   * What to send with this turn. Nothing when the thread already runs at the chosen settings. Otherwise
+   * both are named, including the CLI's own setting for 「自動」, since Codex would keep an earlier choice.
    */
-  private async turnEffort(threadId: string, request: AgentRunRequest): Promise<string | null> {
-    if (request.effort) return request.effort
-    if (this.threadEfforts.get(threadId) === null) return null
-    try {
-      return (await this.choices(request.model)).defaultEffort
-    } catch {
-      return null
+  private async turnOverrides(threadId: string, request: AgentRunRequest): Promise<TurnOverrides> {
+    const current = this.threadSettings.get(threadId)
+    if (current && current.model === request.model && current.effort === request.effort) return { complete: true }
+    let defaults: { model: string | null; effort: string | null } = { model: null, effort: null }
+    if (!request.model || !request.effort) {
+      try {
+        const rpc = await this.connect()
+        const [models, config] = await Promise.all([this.listModels(rpc), this.readConfig(rpc)])
+        defaults = resolveDefaults(models, config, request.model)
+      } catch {
+        // Send what is known; the thread's settings stay unknown and are named again next time.
+      }
     }
+    const model = request.model ?? defaults.model
+    const effort = request.effort ?? defaults.effort
+    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), complete: model !== null && effort !== null }
   }
 
-  private runTurn(rpc: RpcConnection, threadId: string, request: AgentRunRequest, effort: string | null): Promise<AgentRunResult> {
+  private runTurn(rpc: RpcConnection, threadId: string, request: AgentRunRequest, overrides: TurnOverrides): Promise<AgentRunResult> {
     return new Promise<AgentRunResult>((resolve, reject) => {
       let turnId: string | null = null
       let lastItemId: string | null = null
@@ -299,12 +353,14 @@ export class CodexAdapter implements AgentAdapter {
         .request<TurnStartResponse>('turn/start', {
           threadId,
           input: [{ type: 'text', text: request.prompt, text_elements: [] }],
-          ...(effort ? { effort } : {}),
+          ...(overrides.model ? { model: overrides.model } : {}),
+          ...(overrides.effort ? { effort: overrides.effort } : {}),
         })
         .then((started) => {
           turnId = started.turn.id
-          // The thread now runs at the chosen effort, or at the CLI's own setting.
-          if (request.effort || effort || this.threadEfforts.get(threadId) === null) this.threadEfforts.set(threadId, request.effort)
+          // The thread now runs at the chosen settings (null: the CLI's own ones).
+          if (overrides.complete) this.threadSettings.set(threadId, { model: request.model, effort: request.effort })
+          if (overrides.model) request.onModel(overrides.model)
           if (request.signal.aborted) interrupt()
         })
         .catch((error: unknown) => {

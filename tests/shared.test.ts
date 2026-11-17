@@ -6,6 +6,7 @@ import {
   parseAgentId,
   parseConversationId,
   parseEffort,
+  parseModel,
   parseLeadingMention,
   parseSendRequest,
   parseTitle,
@@ -16,8 +17,8 @@ const empty: ChatState = {
   title: 'テスト',
   messages: [],
   agents: {
-    claude: { id: 'claude', model: null, effort: null, busy: false, activity: null },
-    gpt: { id: 'gpt', model: null, effort: null, busy: false, activity: null },
+    claude: { id: 'claude', model: null, activeModel: null, effort: null, busy: false, activity: null },
+    gpt: { id: 'gpt', model: null, activeModel: null, effort: null, busy: false, activity: null },
   },
   dialogue: null,
 }
@@ -41,16 +42,16 @@ describe('applyEvent', () => {
   })
 
   it('updates an agent', () => {
-    const busy = { id: 'gpt', model: 'gpt-6-sol', effort: 'low', busy: true, activity: { kind: 'thinking' } } as const
+    const busy = { id: 'gpt', model: 'gpt-6-sol', activeModel: null, effort: 'low', busy: true, activity: { kind: 'thinking' } } as const
     const state = applyEvent(empty, { type: 'agent:update', agent: busy })
     expect(state.agents.gpt).toEqual(busy)
     expect(state.agents.claude).toBe(empty.agents.claude)
   })
 
   it('changes what an agent is doing, keeping the rest', () => {
-    const busy = applyEvent(empty, { type: 'agent:update', agent: { id: 'gpt', model: 'gpt-6-sol', effort: null, busy: true, activity: { kind: 'thinking' } } })
+    const busy = applyEvent(empty, { type: 'agent:update', agent: { id: 'gpt', model: 'gpt-6-sol', activeModel: null, effort: null, busy: true, activity: { kind: 'thinking' } } })
     const searching = applyEvent(busy, { type: 'agent:activity', id: 'gpt', activity: { kind: 'searching', detail: '東京 雨' } })
-    expect(searching.agents.gpt).toEqual({ id: 'gpt', model: 'gpt-6-sol', effort: null, busy: true, activity: { kind: 'searching', detail: '東京 雨' } })
+    expect(searching.agents.gpt).toEqual({ id: 'gpt', model: 'gpt-6-sol', activeModel: null, effort: null, busy: true, activity: { kind: 'searching', detail: '東京 雨' } })
     expect(searching.agents.claude).toBe(empty.agents.claude)
   })
 
@@ -73,6 +74,12 @@ describe('parseEffort / parseAgentId', () => {
 
   it.each(['', 'High', '--model', 'low; rm', 'x'.repeat(25), 3, undefined])('rejects the effort %j', (raw) => {
     expect(() => parseEffort(raw)).toThrow()
+  })
+
+  it('accepts model aliases and IDs, but nothing that could be read as an option', () => {
+    for (const model of ['sonnet', 'opus[1m]', 'claude-haiku-4-5-20251001', 'gpt-6.1-sol']) expect(parseModel(model)).toBe(model)
+    expect(parseModel(null)).toBeNull()
+    for (const raw of ['', '--model', '-x', 'a b', 'a;b', 'x'.repeat(101), 1]) expect(() => parseModel(raw)).toThrow()
   })
 
   it('accepts only known agents', () => {

@@ -1,5 +1,8 @@
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ClaudeAdapter } from '../src/main/agents/claude'
+import { ClaudeAdapter, parseModelList } from '../src/main/agents/claude'
 import { ClaudeStreamParser } from '../src/main/agents/claudeStream'
 
 // Shapes taken from real `claude -p --output-format stream-json --verbose --include-partial-messages` output.
@@ -112,3 +115,49 @@ describe('ClaudeAdapter.buildArgs', () => {
     expect(args).not.toContain('--resume')
   })
 })
+
+// Shape of Claude Code's answer to an `initialize` control request (trimmed).
+const MODELS = [
+  { value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default (recommended)', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', description: 'Most efficient', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high'] },
+  { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'Fastest' },
+]
+const initializeAnswer = JSON.stringify({
+  type: 'control_response',
+  response: { subtype: 'success', request_id: 'agentsync-models', response: { models: MODELS, account: { email: 'someone@example.com' } } },
+})
+
+describe('Claude model list', () => {
+  it('reads the models from the initialize answer and ignores other lines', () => {
+    expect(parseModelList(initializeAnswer)?.map((m) => m.value)).toEqual(['default', 'sonnet', 'claude-haiku-4-5-20251001'])
+    expect(parseModelList(JSON.stringify({ type: 'system', subtype: 'init' }))).toBeNull()
+    expect(parseModelList('not json')).toBeNull()
+  })
+
+  it('offers the models (「default」 is 「自動」) with the efforts of the model in use, and lets an ID be typed', async () => {
+    // A stand-in for `claude` that answers the initialize request.
+    const folder = mkdtempSync(path.join(tmpdir(), 'agentsync-fake-claude-'))
+    const binary = path.join(folder, 'claude')
+    writeFileSync(binary, `#!/bin/sh\nread line\nprintf '%s\\n' '${initializeAnswer}'\nsleep 5\n`)
+    chmodSync(binary, 0o755)
+    const adapter = new ClaudeAdapter({ resolveBinary: async () => binary, env: () => process.env, listCwd: folder })
+
+    const auto = await adapter.choices(null)
+    expect(auto).toEqual({
+      models: [
+        { value: 'sonnet', label: 'Sonnet 5.5', description: 'Most efficient' },
+        { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest' },
+      ],
+      defaultModel: null,
+      customModel: true,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: null,
+    })
+    expect((await adapter.choices('sonnet')).efforts).toEqual(['low', 'medium', 'high'])
+    expect((await adapter.choices('claude-sonnet-5-5')).efforts).toEqual(['low', 'medium', 'high']) // by full ID
+    expect((await adapter.choices('claude-haiku-4-5-20251001')).efforts).toEqual([]) // no effort setting
+    expect((await adapter.choices('my-custom-model')).efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    adapter.dispose()
+  })
+})
+

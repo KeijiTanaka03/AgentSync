@@ -32,10 +32,12 @@ describe('MessageItem', () => {
     expect(markup).not.toContain('class="caret"')
   })
 
-  it('shows nothing extra once the reply is done', () => {
+  it('shows nothing extra once the reply is done, except a way to copy it', () => {
     const markup = html({ ...reply, text: '美術館はどう？', status: 'done' }, null)
     expect(markup).not.toContain('class="activity')
     expect(markup).not.toContain('class="caret"')
+    expect(markup).toContain('class="message-actions"')
+    expect(html({ ...reply, text: '途中' }, { kind: 'writing' })).not.toContain('class="message-actions"')
   })
 
   it('shows a notice from AgentSync as a line across the timeline', () => {

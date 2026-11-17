@@ -1,5 +1,5 @@
-import { useCallback } from 'react'
-import { AGENT_IDS, DISPLAY_NAMES, otherAgent, type AgentId, type AgentInfo, type DialogueState } from '../../../shared/types'
+import { useCallback, useEffect, useRef } from 'react'
+import { AGENT_IDS, DISPLAY_NAMES, otherAgent, type AgentId, type AgentInfo, type ChatState, type DialogueState } from '../../../shared/types'
 import { errorMessage } from '../errors'
 import { useChat } from '../useChat'
 import { Composer } from './Composer'
@@ -11,6 +11,24 @@ import { Timeline } from './Timeline'
 export function ChatView({ conversationId }: { conversationId: string }) {
   const { state, loadError, send, stop } = useChat(conversationId)
   const loadChoices = useCallback((agent: AgentId) => window.agentsync.agentChoices(conversationId, agent), [conversationId])
+
+  const toggleDialogue = (current: ChatState) => {
+    if (current.dialogue === null && !canStartDialogue(current)) return
+    void window.agentsync.setDialogue(conversationId, current.dialogue === null).catch((error: unknown) => console.error(errorMessage(error)))
+  }
+
+  // Menu shortcuts (⇧⌘D, ⌘.) act on the conversation that is open.
+  const latest = useRef({ state, toggleDialogue, stop })
+  latest.current = { state, toggleDialogue, stop }
+  useEffect(
+    () =>
+      window.agentsync.onMenuCommand((command) => {
+        const { state: current, toggleDialogue: toggle, stop: stopReplies } = latest.current
+        if (command === 'stop') void stopReplies()
+        else if (command === 'toggle-dialogue' && current) toggle(current)
+      }),
+    [],
+  )
 
   if (loadError) {
     return (
@@ -36,6 +54,9 @@ export function ChatView({ conversationId }: { conversationId: string }) {
           void window.agentsync.renameConversation(conversationId, title).catch((error: unknown) => console.error(errorMessage(error)))
         }}
         loadChoices={loadChoices}
+        onModel={(agent, model) => {
+          void window.agentsync.setModel(conversationId, agent, model).catch((error: unknown) => console.error(errorMessage(error)))
+        }}
         onEffort={(agent, effort) => {
           void window.agentsync.setEffort(conversationId, agent, effort).catch((error: unknown) => console.error(errorMessage(error)))
         }}
@@ -46,12 +67,8 @@ export function ChatView({ conversationId }: { conversationId: string }) {
         <Composer
           busy={busy}
           dialogue={state.dialogue !== null}
-          canStartDialogue={state.messages.some((m) => m.from !== 'system')}
-          onToggleDialogue={() => {
-            void window.agentsync
-              .setDialogue(conversationId, state.dialogue === null)
-              .catch((error: unknown) => console.error(errorMessage(error)))
-          }}
+          canStartDialogue={canStartDialogue(state)}
+          onToggleDialogue={() => toggleDialogue(state)}
           onSend={(text, to) => {
             void send({ text, to }).catch((error: unknown) => console.error(errorMessage(error)))
           }}
@@ -60,6 +77,11 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       </div>
     </main>
   )
+}
+
+/** Dialogue mode needs something to talk about. */
+function canStartDialogue(state: ChatState): boolean {
+  return state.messages.some((m) => m.from !== 'system')
 }
 
 /** 「対話モード中 · 3 発言 · 次: GPT」 above the input while the agents take turns. */

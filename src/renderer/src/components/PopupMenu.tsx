@@ -33,7 +33,9 @@ export function PopupMenu({ x, y, align = 'start', label, className, onClose, ch
     const { width, height } = element.getBoundingClientRect()
     const margin = 8
     const left = Math.max(margin, Math.min(align === 'end' ? x - width : x, window.innerWidth - width - margin))
-    const top = y + height + margin > window.innerHeight ? Math.max(margin, y - height - 8) : y
+    // Below the button; above it when there is no room; otherwise as high as needed (a tall menu scrolls).
+    const above = y - height - 8
+    const top = y + height + margin <= window.innerHeight ? y : above >= margin ? above : Math.max(margin, window.innerHeight - height - margin)
     if (position?.left !== left || position?.top !== top) setPosition({ left, top })
   })
 

@@ -1,6 +1,7 @@
 import { DISPLAY_NAMES, type AgentActivity, type ChatMessage, type Recipient } from '../../../shared/types'
 import { ActivityLine } from './Activity'
 import { Avatar } from './Avatar'
+import { CopyButton } from './CopyButton'
 import { MarkdownText } from './MarkdownText'
 
 function formatTime(iso: string): string {
@@ -72,6 +73,11 @@ export function MessageItem({ message, activity, interrupt = false }: MessageIte
             </p>
           )}
         </div>
+        {!streaming && message.text !== '' && (
+          <div className="message-actions">
+            <CopyButton getText={() => message.text} />
+          </div>
+        )}
       </div>
     </div>
   )

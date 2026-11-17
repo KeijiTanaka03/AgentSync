@@ -31,9 +31,21 @@ export class FakeAgent implements AgentAdapter {
   /** Models asked about through `choices`. */
   readonly choiceModels: (string | null)[] = []
 
+  /** Efforts per model, as this fake CLI accepts them (others: low / medium / high). */
+  modelEfforts: Record<string, string[]> = { tiny: ['low'] }
+
   choices(model: string | null): Promise<AgentChoices> {
     this.choiceModels.push(model)
-    return Promise.resolve({ efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' })
+    return Promise.resolve({
+      models: [
+        { value: 'big', label: 'Big', description: null },
+        { value: 'tiny', label: 'Tiny', description: null },
+      ],
+      defaultModel: 'Big',
+      customModel: false,
+      efforts: (model && this.modelEfforts[model]) || ['low', 'medium', 'high'],
+      defaultEffort: 'medium',
+    })
   }
 
   /** Reports what the oldest open turn is doing (thinking, searching, …). */

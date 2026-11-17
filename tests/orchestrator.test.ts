@@ -211,7 +211,7 @@ describe('Orchestrator', () => {
     orchestrator.setEffort('gpt', 'low')
     orchestrator.setEffort('gpt', 'low') // unchanged: no second event
     expect(events.filter((e) => e.event.type === 'agent:update').map((e) => e.event)).toEqual([
-      { type: 'agent:update', agent: { id: 'gpt', model: null, effort: 'low', busy: false, activity: null } },
+      { type: 'agent:update', agent: { id: 'gpt', model: null, activeModel: null, effort: 'low', busy: false, activity: null } },
     ])
 
     orchestrator.send({ text: '急ぎで', to: 'all' })
@@ -224,13 +224,28 @@ describe('Orchestrator', () => {
     expect(orchestrator.snapshot().state.agents.gpt.effort).toBeNull()
   })
 
+  it('uses a chosen model from the next reply on, and shows the model the CLI reports', async () => {
+    const { claude, orchestrator } = setup()
+    orchestrator.setModel('claude', 'tiny')
+    expect(orchestrator.info('claude')).toMatchObject({ model: 'tiny', activeModel: null })
+    orchestrator.send({ text: 'hi', to: 'claude' })
+    await flush()
+    expect(claude.calls[0]!.model).toBe('tiny')
+    claude.calls[0]!.onModel('tiny-2026')
+    expect(orchestrator.info('claude')).toMatchObject({ model: 'tiny', activeModel: 'tiny-2026' })
+    expect(orchestrator.content().participants.claude.model).toBe('tiny') // the choice is kept, not what was reported
+
+    orchestrator.setModel('claude', null)
+    expect(orchestrator.info('claude')).toMatchObject({ model: null, activeModel: null })
+  })
+
   it('asks the agent what can be chosen for its current model', async () => {
     const { gpt, orchestrator } = setup()
     orchestrator.send({ text: 'hi', to: 'gpt' })
     await flush()
     gpt.reply('hello')
     await flush()
-    await expect(orchestrator.choices('gpt')).resolves.toEqual({ efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' })
+    await expect(orchestrator.choices('gpt')).resolves.toMatchObject({ efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' })
     expect(gpt.choiceModels).toEqual([null])
   })
 
