@@ -40,6 +40,27 @@ describe('ClaudeStreamParser', () => {
     expect(texts.join('')).toBe('一つ目\n\n二つ目')
   })
 
+  it('reports thinking and tool use when such a block starts', () => {
+    const parser = new ClaudeStreamParser()
+    const blockStart = (content_block: unknown) => line({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block } })
+    const events = [
+      messageStart,
+      blockStart({ type: 'thinking', thinking: '', signature: '' }),
+      line({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '' } } }),
+      blockStart({ type: 'text', text: '' }),
+      delta('答え'),
+      blockStart({ type: 'server_tool_use', id: 't1', name: 'web_search', input: {} }),
+      blockStart({ type: 'tool_use', id: 't2', name: 'Read', input: {} }),
+    ].flatMap((l) => parser.push(l))
+
+    expect(events).toEqual([
+      { kind: 'activity', activity: { kind: 'thinking' } },
+      { kind: 'text', text: '答え' },
+      { kind: 'activity', activity: { kind: 'searching' } },
+      { kind: 'activity', activity: { kind: 'working' } },
+    ])
+  })
+
   it('falls back to the result text when nothing was streamed', () => {
     const parser = new ClaudeStreamParser()
     expect(parser.push(line({ type: 'result', subtype: 'success', result: 'まとめて' }))).toEqual([
@@ -63,7 +84,7 @@ describe('ClaudeStreamParser', () => {
 
 describe('ClaudeAdapter.buildArgs', () => {
   it('disables tools and MCP servers and resumes the session when there is one', () => {
-    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: 'haiku', sessionId: 'sess-1' })
+    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: 'haiku', effort: 'low', sessionId: 'sess-1' })
     expect(args).toEqual([
       '-p',
       '--output-format',
@@ -77,14 +98,17 @@ describe('ClaudeAdapter.buildArgs', () => {
       'SYS',
       '--model',
       'haiku',
+      '--effort',
+      'low',
       '--resume',
       'sess-1',
     ])
   })
 
-  it('leaves out model and resume when not set', () => {
-    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: null, sessionId: null })
+  it('leaves out model, effort and resume when not set', () => {
+    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: null, effort: null, sessionId: null })
     expect(args).not.toContain('--model')
+    expect(args).not.toContain('--effort')
     expect(args).not.toContain('--resume')
   })
 })

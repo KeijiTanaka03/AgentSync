@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- AgentSync app icon: two arrows chasing each other (Claude orange, GPT green) around 「…」,
+       on a dark tile. The tile follows the macOS grid: 824 × 824 at (100, 100), corner radius 185. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E3148"/>
+      <stop offset="1" stop-color="#0B0C14"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.28" cy="0.1" r="0.85">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="core" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="orange" gradientUnits="userSpaceOnUse" x1="250" y1="500" x2="780" y2="370">
+      <stop offset="0" stop-color="#B4401A"/>
+      <stop offset="0.55" stop-color="#EE7A47"/>
+      <stop offset="1" stop-color="#FFC3A0"/>
+    </linearGradient>
+    <linearGradient id="green" gradientUnits="userSpaceOnUse" x1="250" y1="500" x2="780" y2="370">
+      <stop offset="0" stop-color="#096A4F"/>
+      <stop offset="0.55" stop-color="#22B887"/>
+      <stop offset="1" stop-color="#A2F7D6"/>
+    </linearGradient>
+    <linearGradient id="gloss" gradientUnits="userSpaceOnUse" x1="0" y1="250" x2="0" y2="520">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="28"/></filter>
+    <filter id="shadow" color-interpolation-filters="sRGB" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <path id="arrow" d="M 250.04 465.81 A 266 266 0 0 1 742.36 379 L 777.87 358.5 L 729.86 481.38 L 627.18 445.5 L 662.69 425 A 174 174 0 0 0 340.64 481.79 A 46 46 0 0 1 250.04 465.81 Z"/>
+    <clipPath id="arrowClip"><use href="#arrow"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <g clip-path="url(#tile)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+    <circle cx="512" cy="512" r="300" fill="url(#core)"/>
+    <g filter="url(#glow)" opacity="0.8">
+      <use href="#arrow" fill="url(#orange)"/>
+      <use href="#arrow" fill="url(#green)" transform="rotate(180 512 512)"/>
+    </g>
+    <g filter="url(#soft)">
+      <use href="#arrow" fill="url(#orange)"/>
+      <use href="#arrow" fill="url(#green)" transform="rotate(180 512 512)"/>
+    </g>
+    <!-- glassy top light on each arrow -->
+    <rect x="200" y="230" width="640" height="300" fill="url(#gloss)" clip-path="url(#arrowClip)"/>
+    <g transform="rotate(180 512 512)"><rect x="200" y="230" width="640" height="300" fill="url(#gloss)" clip-path="url(#arrowClip)" opacity="0.55"/></g>
+    <g fill="#FBF8F1" filter="url(#soft)">
+      <circle cx="444" cy="512" r="25"/>
+      <circle cx="512" cy="512" r="25"/>
+      <circle cx="580" cy="512" r="25"/>
+    </g>
+  </g>
+</svg>

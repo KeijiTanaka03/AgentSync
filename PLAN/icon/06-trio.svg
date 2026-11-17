@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- 06 3 人のつながり: you (white), Claude (orange) and GPT (green), all linked to each other. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#252C40"/>
+      <stop offset="1" stop-color="#090C14"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.28" cy="0.1" r="0.85">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.14"/>
+      <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="uc" gradientUnits="userSpaceOnUse" x1="512" y1="352" x2="330" y2="672">
+      <stop offset="0" stop-color="#F4F1EA"/><stop offset="1" stop-color="#F07B48"/>
+    </linearGradient>
+    <linearGradient id="ug" gradientUnits="userSpaceOnUse" x1="512" y1="352" x2="694" y2="672">
+      <stop offset="0" stop-color="#F4F1EA"/><stop offset="1" stop-color="#22B887"/>
+    </linearGradient>
+    <linearGradient id="cg" gradientUnits="userSpaceOnUse" x1="330" y1="672" x2="694" y2="672">
+      <stop offset="0" stop-color="#F07B48"/><stop offset="1" stop-color="#22B887"/>
+    </linearGradient>
+    <radialGradient id="you" cx="0.38" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#D9D3C4"/>
+    </radialGradient>
+    <radialGradient id="claude" cx="0.38" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#FFC1A0"/><stop offset="0.55" stop-color="#EE7442"/><stop offset="1" stop-color="#B9431A"/>
+    </radialGradient>
+    <radialGradient id="gpt" cx="0.38" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#9FF7D6"/><stop offset="0.55" stop-color="#22B887"/><stop offset="1" stop-color="#0A7254"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="26"/></filter>
+    <filter id="shadow" color-interpolation-filters="sRGB" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <g clip-path="url(#tile)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+    <g stroke-width="30" stroke-linecap="round">
+      <line x1="512" y1="352" x2="330" y2="672" stroke="url(#uc)"/>
+      <line x1="512" y1="352" x2="694" y2="672" stroke="url(#ug)"/>
+      <line x1="330" y1="672" x2="694" y2="672" stroke="url(#cg)"/>
+    </g>
+    <g filter="url(#glow)" opacity="0.8">
+      <circle cx="512" cy="352" r="90" fill="#F4F1EA" opacity="0.6"/>
+      <circle cx="330" cy="672" r="90" fill="#F0703C"/>
+      <circle cx="694" cy="672" r="90" fill="#1FC08A"/>
+    </g>
+    <circle cx="512" cy="352" r="90" fill="url(#you)"/>
+    <circle cx="330" cy="672" r="90" fill="url(#claude)"/>
+    <circle cx="694" cy="672" r="90" fill="url(#gpt)"/>
+  </g>
+</svg>

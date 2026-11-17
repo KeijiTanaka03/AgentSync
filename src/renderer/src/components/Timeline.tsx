@@ -1,11 +1,11 @@
 import { useLayoutEffect, useRef } from 'react'
-import type { ChatMessage } from '../../../shared/types'
+import type { AgentId, AgentInfo, ChatMessage } from '../../../shared/types'
 import { MessageItem } from './MessageItem'
 
 /** Distance from the bottom (px) within which new content keeps the view pinned to the bottom. */
 const STICK_THRESHOLD = 96
 
-export function Timeline({ messages }: { messages: ChatMessage[] }) {
+export function Timeline({ messages, agents }: { messages: ChatMessage[]; agents: Record<AgentId, AgentInfo> }) {
   const scroller = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
   const lastCount = useRef(messages.length)
@@ -42,7 +42,11 @@ export function Timeline({ messages }: { messages: ChatMessage[] }) {
       ) : (
         <section className="messages" aria-label="メッセージ" aria-live="polite">
           {messages.map((message) => (
-            <MessageItem key={message.id} message={message} />
+            <MessageItem
+              key={message.id}
+              message={message}
+              activity={message.from !== 'user' && message.status === 'streaming' ? agents[message.from].activity : null}
+            />
           ))}
         </section>
       )}

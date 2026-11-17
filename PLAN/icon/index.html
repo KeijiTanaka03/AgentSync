@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentSync アイコン案</title>
+<style>
+:root{--bg:#FAF9F5;--text:#141413;--muted:#5E5D57;--line:#E3DED1;--card:#FFFFFF}
+@media (prefers-color-scheme:dark){:root{--bg:#1F1E1C;--text:#ECEAE4;--muted:#A8A59C;--line:#34322E;--card:#282724}}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;line-height:1.8}
+main{max-width:1080px;margin:0 auto;padding:48px 16px}
+h1{font-family:"Hiragino Mincho ProN","Noto Serif JP",serif;font-weight:600;margin:0 0 8px}
+.lead{color:var(--muted);margin:0 0 32px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px}
+article{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}
+.stage{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stage div{display:grid;place-items:center;border-radius:12px;padding:10px 0}
+.dark{background:#1D1D20}.light{background:#ECEBE8}
+.stage img{width:min(128px,100%);height:auto}
+.sizes{display:flex;align-items:center;gap:14px;margin:10px 0 4px}
+h2{font-size:17px;margin:8px 0 0}
+p{margin:4px 0 0;color:var(--muted);font-size:14px}
+code{font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>AgentSync アイコン案</h1>
+  <p class="lead">
+    10 個の案です。左は暗い背景、右は明るい背景に置いたとき、下は Dock やメニューの大きさ（64・32・16 px）です。
+    使うものは <code>build/icon.svg</code> にコピーして <code>npm run icon</code> で PNG を作り直します（今は ④ を使っています）。
+  </p>
+  <section class="grid" id="list"></section>
+</main>
+<script>
+const icons = [
+  ['01-orbit.svg', '① 回る矢印', 'オレンジと緑の矢印が「…」の周りを回る。Sync（同期）とチャットを一度に表す'],
+  ['02-glass.svg', '② ガラスの吹き出し', '2 つの吹き出しが重なる。いちばん「チャットのアプリ」らしい'],
+  ['03-binary-stars.svg', '③ 2 つの星', 'オレンジと緑の星が同じ軌道を回る。2 つの AI が並んで動くイメージ'],
+  ['04-neon.svg', '④ ネオンの吹き出し（今のアイコン）', '黒い背景に、ネオン管のような 2 つの吹き出しが光る'],
+  ['05-infinity.svg', '⑤ 無限ループ', '片側がオレンジ、片側が緑の ∞。止めるまで続く対話モードを表す'],
+  ['06-trio.svg', '⑥ 3 人のつながり', 'あなた（白）・Claude（オレンジ）・GPT（緑）の 3 人が互いにつながる'],
+  ['07-monogram.svg', '⑦ 頭文字 A', 'AgentSync の A。左の脚がオレンジ、右の脚が緑で、横棒が「…」'],
+  ['08-faces.svg', '⑧ 二人の顔', '顔のある 2 つの吹き出しが見つめ合う。明るく親しみやすい'],
+  ['09-waveform.svg', '⑨ 声の波形', '吹き出しの中の波形が、オレンジと緑で交互に話す'],
+  ['10-terminal.svg', '⑩ ターミナルの吹き出し', 'ターミナルの形の吹き出しに「>_」。裏で動く 2 つの CLI を表す'],
+]
+const list = document.getElementById('list')
+for (const [file, name, note] of icons) {
+  const article = document.createElement('article')
+  article.innerHTML = `
+    <div class="stage"><div class="dark"><img src="${file}" alt=""></div><div class="light"><img src="${file}" alt=""></div></div>
+    <div class="sizes"><img src="${file}" width="64" height="64" alt=""><img src="${file}" width="32" height="32" alt=""><img src="${file}" width="16" height="16" alt=""></div>
+    <h2>${name}</h2><p>${note}</p><p><code>PLAN/icon/${file}</code></p>`
+  list.append(article)
+}
+</script>
+</body>
+</html>

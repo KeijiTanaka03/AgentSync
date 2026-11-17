@@ -1,8 +1,10 @@
 // Parses the `--output-format stream-json` output of `claude -p` (one JSON object per line).
+import type { AgentActivity } from '../../shared/types'
 
 export type ClaudeStreamEvent =
   | { kind: 'session'; sessionId: string }
   | { kind: 'model'; model: string }
+  | { kind: 'activity'; activity: AgentActivity }
   | { kind: 'text'; text: string }
   | { kind: 'result'; ok: true; text: string }
   | { kind: 'result'; ok: false; error: string }
@@ -11,6 +13,20 @@ type Json = Record<string, unknown>
 
 function isObject(value: unknown): value is Json {
   return typeof value === 'object' && value !== null
+}
+
+/** What a new content block means for the activity shown in the chat. Text is reported as text. */
+function blockActivity(block: Json): AgentActivity | null {
+  switch (block.type) {
+    case 'thinking':
+    case 'redacted_thinking':
+      return { kind: 'thinking' }
+    case 'server_tool_use':
+    case 'tool_use':
+      return block.name === 'web_search' || block.name === 'WebSearch' ? { kind: 'searching' } : { kind: 'working' }
+    default:
+      return null
+  }
 }
 
 /**
@@ -63,6 +79,10 @@ export class ClaudeStreamParser {
     if (event.type === 'message_start') {
       this.separatorPending = this.streamedText !== ''
       return []
+    }
+    if (event.type === 'content_block_start' && isObject(event.content_block)) {
+      const activity = blockActivity(event.content_block)
+      return activity ? [{ kind: 'activity', activity }] : []
     }
     if (event.type !== 'content_block_delta' || !isObject(event.delta)) return []
     const { delta } = event

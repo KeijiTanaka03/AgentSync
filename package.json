@@ -11,10 +11,13 @@
   "scripts": {
     "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev",
     "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder",
+    "install:app": "npm run dist && sh scripts/install-app.sh",
     "preview": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "test:e2e": "AGENTSYNC_E2E=1 vitest run tests/e2e"
+    "test:e2e": "AGENTSYNC_E2E=1 vitest run tests/e2e",
+    "icon": "env -u ELECTRON_RUN_AS_NODE electron scripts/render-icon.mjs"
   },
   "devDependencies": {
     "@types/node": "26.6.6",
@@ -22,10 +25,12 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.3.0",
     "electron": "45.3.3",
+    "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-markdown": "10.1.0",
+    "remark-cjk-friendly": "2.3.3",
     "remark-gfm": "4.0.1",
     "typescript": "7.0.2",
     "vite": "8.3.8",

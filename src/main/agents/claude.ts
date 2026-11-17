@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import readline from 'node:readline'
+import type { AgentChoices } from '../../shared/types'
 import type { AgentAdapter, AgentRunRequest, AgentRunResult } from './types'
 import { ClaudeStreamParser } from './claudeStream'
 
@@ -12,6 +13,9 @@ export interface ClaudeAdapterOptions {
 
 const STDERR_LIMIT = 8_000
 
+/** The levels `claude --effort` accepts (Claude Code 2.1). Claude Code does not report which one it uses by default. */
+export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
 /**
  * Runs one `claude -p` process per turn and continues the conversation with `--resume`.
  * In chat mode all tools and MCP servers are off, so Claude can only talk.
@@ -22,7 +26,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   constructor(private readonly options: ClaudeAdapterOptions) {}
 
-  static buildArgs(request: Pick<AgentRunRequest, 'systemPrompt' | 'model' | 'sessionId'>): string[] {
+  static buildArgs(request: Pick<AgentRunRequest, 'systemPrompt' | 'model' | 'effort' | 'sessionId'>): string[] {
     const args = [
       '-p',
       '--output-format',
@@ -36,6 +40,7 @@ export class ClaudeAdapter implements AgentAdapter {
       request.systemPrompt,
     ]
     if (request.model) args.push('--model', request.model)
+    if (request.effort) args.push('--effort', request.effort)
     if (request.sessionId) args.push('--resume', request.sessionId)
     return args
   }
@@ -71,6 +76,7 @@ export class ClaudeAdapter implements AgentAdapter {
         for (const event of parser.push(line)) {
           if (event.kind === 'session') request.onSession(event.sessionId)
           else if (event.kind === 'model') request.onModel(event.model)
+          else if (event.kind === 'activity') request.onActivity(event.activity)
           else if (event.kind === 'text') request.onText(event.text)
           else outcome = event.ok ? { ok: true, text: event.text } : { ok: false, error: event.error }
         }
@@ -100,6 +106,10 @@ export class ClaudeAdapter implements AgentAdapter {
       })
       child.stdin.end(request.prompt)
     })
+  }
+
+  choices(): Promise<AgentChoices> {
+    return Promise.resolve({ efforts: [...CLAUDE_EFFORTS], defaultEffort: null })
   }
 
   dispose(): void {

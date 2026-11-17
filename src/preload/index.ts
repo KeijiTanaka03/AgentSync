@@ -1,18 +1,38 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AgentSyncApi, ChatEventEnvelope, ChatSnapshot, SendRequest } from '../shared/types'
+import type {
+  AgentChoices,
+  AgentId,
+  AgentSyncApi,
+  ChatSnapshot,
+  ConversationEventEnvelope,
+  ConversationSummary,
+  MenuCommand,
+  SendRequest,
+} from '../shared/types'
+
+function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
+  const handler = (_event: IpcRendererEvent, payload: T) => listener(payload)
+  ipcRenderer.on(channel, handler)
+  return () => {
+    ipcRenderer.removeListener(channel, handler)
+  }
+}
 
 // The only bridge between the page and the main process. Keep it small.
 const api: AgentSyncApi = {
-  snapshot: () => ipcRenderer.invoke('chat:snapshot') as Promise<ChatSnapshot>,
-  send: (request: SendRequest) => ipcRenderer.invoke('chat:send', request) as Promise<void>,
-  stop: () => ipcRenderer.invoke('chat:stop') as Promise<void>,
-  onEvent: (listener) => {
-    const handler = (_event: IpcRendererEvent, envelope: ChatEventEnvelope) => listener(envelope)
-    ipcRenderer.on('chat:event', handler)
-    return () => {
-      ipcRenderer.removeListener('chat:event', handler)
-    }
-  },
+  listConversations: () => ipcRenderer.invoke('conversations:list') as Promise<ConversationSummary[]>,
+  createConversation: () => ipcRenderer.invoke('conversations:create') as Promise<string>,
+  renameConversation: (id: string, title: string) => ipcRenderer.invoke('conversations:rename', id, title) as Promise<void>,
+  deleteConversation: (id: string) => ipcRenderer.invoke('conversations:delete', id) as Promise<boolean>,
+  snapshot: (id: string) => ipcRenderer.invoke('chat:snapshot', id) as Promise<ChatSnapshot>,
+  agentChoices: (id: string, agent: AgentId) => ipcRenderer.invoke('agents:choices', id, agent) as Promise<AgentChoices>,
+  setEffort: (id: string, agent: AgentId, effort: string | null) =>
+    ipcRenderer.invoke('agents:effort', id, agent, effort) as Promise<void>,
+  send: (id: string, request: SendRequest) => ipcRenderer.invoke('chat:send', id, request) as Promise<void>,
+  stop: (id: string) => ipcRenderer.invoke('chat:stop', id) as Promise<void>,
+  onEvent: (listener) => subscribe<ConversationEventEnvelope>('chat:event', listener),
+  onConversations: (listener) => subscribe<ConversationSummary[]>('conversations:changed', listener),
+  onMenuCommand: (listener) => subscribe<MenuCommand>('menu:command', listener),
 }
 
 contextBridge.exposeInMainWorld('agentsync', api)

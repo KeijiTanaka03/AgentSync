@@ -1,0 +1,30 @@
+# Builds AgentSync.app for this Mac: `npm run dist` → release/mac-<arch>/AgentSync.app
+appId: local.agentsync.app
+productName: AgentSync
+directories:
+  output: release
+  buildResources: build
+# Only the built app goes in (no sources, tests or plans). There are no runtime dependencies.
+files:
+  - out/**/*
+  - '!out/main/selftest-*.js' # development only
+  - package.json
+asar: true
+mac:
+  target:
+    - target: dir
+  category: public.app-category.productivity
+  icon: build/icon.png
+  # A personal build: ad-hoc signature, no Apple Developer certificate and no notarization
+  # (the hardened runtime only matters for notarized apps).
+  identity: '-'
+  hardenedRuntime: false
+# Turn off Electron features the app does not use, so the packaged app cannot be repurposed
+# (e.g. run as plain Node.js, or have code injected through NODE_OPTIONS / --inspect).
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableCookieEncryption: true
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true

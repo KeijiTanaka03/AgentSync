@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import { applyEvent } from '../src/shared/state'
 import type { ChatMessage, ChatState } from '../src/shared/types'
-import { parseLeadingMention, parseSendRequest } from '../src/shared/validate'
+import {
+  isConversationId,
+  parseAgentId,
+  parseConversationId,
+  parseEffort,
+  parseLeadingMention,
+  parseSendRequest,
+  parseTitle,
+  titleFromMessage,
+} from '../src/shared/validate'
 
 const empty: ChatState = {
   title: 'テスト',
   messages: [],
   agents: {
-    claude: { id: 'claude', model: null, busy: false },
-    gpt: { id: 'gpt', model: null, busy: false },
+    claude: { id: 'claude', model: null, effort: null, busy: false, activity: null },
+    gpt: { id: 'gpt', model: null, effort: null, busy: false, activity: null },
   },
 }
 
@@ -31,9 +40,37 @@ describe('applyEvent', () => {
   })
 
   it('updates an agent', () => {
-    const state = applyEvent(empty, { type: 'agent:update', agent: { id: 'gpt', model: 'gpt-6-sol', busy: true } })
-    expect(state.agents.gpt).toEqual({ id: 'gpt', model: 'gpt-6-sol', busy: true })
+    const busy = { id: 'gpt', model: 'gpt-6-sol', effort: 'low', busy: true, activity: { kind: 'thinking' } } as const
+    const state = applyEvent(empty, { type: 'agent:update', agent: busy })
+    expect(state.agents.gpt).toEqual(busy)
     expect(state.agents.claude).toBe(empty.agents.claude)
+  })
+
+  it('changes what an agent is doing, keeping the rest', () => {
+    const busy = applyEvent(empty, { type: 'agent:update', agent: { id: 'gpt', model: 'gpt-6-sol', effort: null, busy: true, activity: { kind: 'thinking' } } })
+    const searching = applyEvent(busy, { type: 'agent:activity', id: 'gpt', activity: { kind: 'searching', detail: '東京 雨' } })
+    expect(searching.agents.gpt).toEqual({ id: 'gpt', model: 'gpt-6-sol', effort: null, busy: true, activity: { kind: 'searching', detail: '東京 雨' } })
+    expect(searching.agents.claude).toBe(empty.agents.claude)
+  })
+
+  it('renames the conversation', () => {
+    expect(applyEvent(empty, { type: 'title:update', title: 'DB 選び' }).title).toBe('DB 選び')
+  })
+})
+
+describe('parseEffort / parseAgentId', () => {
+  it('accepts plain effort names and null', () => {
+    expect(parseEffort('xhigh')).toBe('xhigh')
+    expect(parseEffort(null)).toBeNull()
+  })
+
+  it.each(['', 'High', '--model', 'low; rm', 'x'.repeat(25), 3, undefined])('rejects the effort %j', (raw) => {
+    expect(() => parseEffort(raw)).toThrow()
+  })
+
+  it('accepts only known agents', () => {
+    expect(parseAgentId('gpt')).toBe('gpt')
+    expect(() => parseAgentId('user')).toThrow()
   })
 })
 
@@ -64,5 +101,46 @@ describe('parseLeadingMention', () => {
     expect(parseLeadingMention('ねえ @Claude')).toBeNull()
     expect(parseLeadingMention('@Claudette hi')).toBeNull()
     expect(parseLeadingMention('@someone hi')).toBeNull()
+  })
+})
+
+describe('conversation IDs', () => {
+  it('accepts IDs that are safe as file names', () => {
+    expect(isConversationId('mi3k2x9a-1f2e3d')).toBe(true)
+    expect(parseConversationId('abc')).toBe('abc')
+  })
+
+  it.each(['', '../secret', 'a/b', 'ABC', '-abc', 'a'.repeat(65), 1, null])('rejects %j', (raw) => {
+    expect(isConversationId(raw)).toBe(false)
+    expect(() => parseConversationId(raw)).toThrow()
+  })
+})
+
+describe('parseTitle', () => {
+  it('keeps one trimmed line', () => {
+    expect(parseTitle('  DB の\n 相談  ')).toBe('DB の 相談')
+  })
+
+  it('cuts very long titles', () => {
+    expect(parseTitle('あ'.repeat(500))).toHaveLength(120)
+  })
+
+  it.each(['', '   ', 3, null])('rejects %j', (raw) => {
+    expect(() => parseTitle(raw)).toThrow()
+  })
+})
+
+describe('titleFromMessage', () => {
+  it('uses the first non-empty line', () => {
+    expect(titleFromMessage('\n  DB は何がいい？\n詳しくは…')).toBe('DB は何がいい？')
+  })
+
+  it('cuts long lines by characters, not bytes', () => {
+    expect(titleFromMessage('あ'.repeat(50), 10)).toBe('ああああああああああ…')
+    expect(titleFromMessage('😀'.repeat(12), 10)).toBe('😀'.repeat(10) + '…')
+  })
+
+  it('returns an empty string for blank text', () => {
+    expect(titleFromMessage(' \n ')).toBe('')
   })
 })

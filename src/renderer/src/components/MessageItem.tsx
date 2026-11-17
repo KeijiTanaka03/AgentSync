@@ -1,4 +1,5 @@
-import { DISPLAY_NAMES, type ChatMessage, type Recipient } from '../../../shared/types'
+import { DISPLAY_NAMES, type AgentActivity, type ChatMessage, type Recipient } from '../../../shared/types'
+import { ActivityLine } from './Activity'
 import { Avatar } from './Avatar'
 import { MarkdownText } from './MarkdownText'
 
@@ -19,7 +20,13 @@ function replyLabel(to: Recipient): string {
   return `▸ ${DISPLAY_NAMES[to]} への返信`
 }
 
-export function MessageItem({ message }: { message: ChatMessage }) {
+interface MessageItemProps {
+  message: ChatMessage
+  /** What the sender is doing, for a reply that is still streaming. */
+  activity: AgentActivity | null
+}
+
+export function MessageItem({ message, activity }: MessageItemProps) {
   const time = formatTime(message.at)
 
   if (message.from === 'user') {
@@ -36,6 +43,9 @@ export function MessageItem({ message }: { message: ChatMessage }) {
 
   const agent = message.from
   const streaming = message.status === 'streaming'
+  // While writing, the caret is enough; otherwise say what the agent is doing (also between paragraphs).
+  const doing: AgentActivity | null = streaming ? (activity ?? { kind: 'thinking' }) : null
+  const writing = doing?.kind === 'writing' && message.text !== ''
   return (
     <div className="row row-agent">
       <Avatar agent={agent} />
@@ -44,17 +54,9 @@ export function MessageItem({ message }: { message: ChatMessage }) {
           <b>{DISPLAY_NAMES[agent]}</b> · {replyLabel(message.to)} · {time}
         </div>
         <div className={`bubble bubble-agent bubble-${agent}`} aria-busy={streaming}>
-          {streaming && message.text === '' ? (
-            <span className="typing">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-              <span className="typing-label">{DISPLAY_NAMES[agent]} が入力中…</span>
-            </span>
-          ) : (
-            message.text !== '' && <MarkdownText text={message.text} />
-          )}
-          {streaming && message.text !== '' && <span className="caret" aria-hidden="true" />}
+          {message.text !== '' && <MarkdownText text={message.text} />}
+          {writing && <span className="caret" aria-hidden="true" />}
+          {doing && !writing && <ActivityLine activity={doing} since={message.at} />}
           {message.status === 'stopped' && <p className="note">停止しました</p>}
           {message.status === 'error' && (
             <p className="error" role="alert">

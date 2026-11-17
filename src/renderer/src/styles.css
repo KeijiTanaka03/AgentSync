@@ -3,6 +3,7 @@
   --bg: #faf9f5;
   --sidebar: #f2efe6;
   --sidebar-active: #e6e1d4;
+  --sidebar-hover: #ebe7dc;
   --line: #e3ded1;
   --line-strong: #d9d3c3;
   --text: #141413;
@@ -31,6 +32,7 @@
     --bg: #1f1e1c;
     --sidebar: #191817;
     --sidebar-active: #2e2c29;
+    --sidebar-hover: #252422;
     --line: #34322e;
     --line-strong: #47443e;
     --text: #eceae4;
@@ -98,38 +100,277 @@ button {
 }
 
 .sidebar {
-  flex: 0 0 248px;
+  flex: 0 0 256px;
+  min-width: 0; /* stay 256px wide; long titles are cut with an ellipsis instead */
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 48px 14px 20px; /* room for the window buttons */
+  gap: 14px;
+  min-height: 0;
+  padding: 48px 10px 12px; /* room for the window buttons */
   background: var(--sidebar);
   border-right: 1px solid var(--line);
   -webkit-app-region: drag;
 }
 
 .brand {
-  padding: 0 8px;
+  padding: 0 10px;
   font-family: var(--font-serif);
   font-size: 22px;
   font-weight: 600;
 }
 
-.conversations {
+.new-conversation {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.conversation {
-  padding: 10px 12px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
+  background: var(--surface);
+  font-size: 14px;
   font-weight: 500;
+  cursor: pointer;
   -webkit-app-region: no-drag;
 }
 
-.conversation-active {
+.new-conversation:hover {
+  border-color: var(--muted);
+}
+
+.new-conversation kbd {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.conversations {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-app-region: no-drag;
+}
+
+.conversation-group + .conversation-group {
+  margin-top: 14px;
+}
+
+.conversation-group h2 {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.conversation-group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conversation {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+}
+
+.conversation:hover {
+  background: var(--sidebar-hover);
+}
+
+.conversation-active,
+.conversation-active:hover {
   background: var(--sidebar-active);
+}
+
+.conversation-open {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-active .conversation-title {
+  font-weight: 600;
+}
+
+.conversation-busy {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--claude);
+  animation: blink 1.2s infinite ease-in-out;
+}
+
+.conversation-more {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-right: 3px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.conversation:hover .conversation-more,
+.conversation-menu-open .conversation-more,
+.conversation-more:focus-visible {
+  opacity: 1;
+}
+
+.conversation-more:hover,
+.conversation-menu-open .conversation-more {
+  background: var(--line);
+  color: var(--text);
+}
+
+.conversation-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid var(--claude);
+  border-radius: 10px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
+/* ---------- pop-up menu ---------- */
+
+.menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 176px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow:
+    0 12px 32px rgb(0 0 0 / 16%),
+    0 2px 6px rgb(0 0 0 / 8%);
+  -webkit-app-region: no-drag;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  outline: none;
+  background: var(--sidebar-hover);
+}
+
+.menu-danger,
+.menu-danger svg {
+  color: var(--danger);
+}
+
+.menu:focus {
+  outline: none;
+}
+
+.menu-heading {
+  padding: 6px 10px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.menu-status {
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.menu-error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+.menu-hint {
+  margin-left: auto;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The check mark keeps its space so the names line up; it shows only on the chosen item. */
+.menu-item .menu-check {
+  color: var(--claude);
+  visibility: hidden;
+}
+
+.menu-item[aria-checked='true'] .menu-check {
+  visibility: visible;
+}
+
+.menu-item[aria-checked='true'] {
+  font-weight: 600;
+}
+
+.effort-menu {
+  width: 260px;
+}
+
+.effort-menu .menu-item {
+  font-family: var(--font-sans);
+}
+
+.menu-note {
+  margin: 4px 0 0;
+  padding: 7px 10px 3px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .chat {
@@ -137,6 +378,12 @@ button {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.chat-message {
+  max-width: 560px;
+  margin: 14vh auto 0;
+  padding: 0 24px;
 }
 
 @media (max-width: 760px) {
@@ -153,33 +400,137 @@ button {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
+  gap: 16px;
   min-height: 56px;
-  padding: 10px 28px;
+  padding: 10px 28px 10px 20px;
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
 
+/* The title takes the space left over and shortens with an ellipsis; the participants never wrap. */
+.header-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .header h1 {
   margin: 0;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.title-button,
+.title-input {
+  max-width: 100%;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   font-family: var(--font-serif);
   font-size: 19px;
   font-weight: 600;
+  line-height: 1.5;
+  -webkit-app-region: no-drag;
+}
+
+.title-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+  background: none;
+  text-align: left;
+  cursor: text;
+}
+
+.title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-edit {
+  flex: none;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.title-button:hover {
+  border-color: var(--line-strong);
+}
+
+.title-button:hover .title-edit,
+.title-button:focus-visible .title-edit {
+  opacity: 1;
+}
+
+.title-input {
+  width: min(520px, 100%);
+  border-color: var(--line-strong);
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.title-input:focus {
+  border-color: var(--claude);
+}
+
+/* The coloured border already shows where you are typing; skip the extra focus ring. */
+.title-input:focus-visible,
+.conversation-rename:focus-visible {
+  outline: none;
 }
 
 .participants {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 16px;
   font-size: 13px;
 }
 
+@media (max-width: 980px) {
+  .participant-model {
+    display: none;
+  }
+}
+
+/* Each participant is a button that opens its effort menu. */
 .participant {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 34px;
+  padding: 3px 8px 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.participant:hover,
+.participant[aria-expanded='true'] {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.participant-effort {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.8;
+}
+
+.participant-chevron {
+  flex: none;
+  color: var(--muted);
 }
 
 .participant-model {
@@ -351,15 +702,27 @@ button {
   border-color: var(--gpt-line);
 }
 
-.typing {
-  display: inline-flex;
+/* 「考え中… 12 秒」 while a reply is on its way; the dots and icon take the agent's colour. */
+.activity {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.6;
 }
 
-.typing .dot {
+.md + .activity {
+  margin-top: 8px;
+}
+
+.activity .dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.activity .dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -367,16 +730,42 @@ button {
   animation: blink 1.2s infinite ease-in-out;
 }
 
-.typing .dot:nth-child(2) {
+.activity .dot:nth-child(2) {
   animation-delay: 0.15s;
 }
 
-.typing .dot:nth-child(3) {
+.activity .dot:nth-child(3) {
   animation-delay: 0.3s;
 }
 
-.typing-label {
-  margin-left: 4px;
+.activity-icon {
+  flex: none;
+  animation: blink 1.6s infinite ease-in-out;
+}
+
+.bubble-claude .activity .dots,
+.bubble-claude .activity-icon {
+  color: var(--claude);
+}
+
+.bubble-gpt .activity .dots,
+.bubble-gpt .activity-icon {
+  color: var(--gpt);
+}
+
+.activity-detail {
+  display: inline-block;
+  max-width: 24em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.activity-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }
 
 .caret {
@@ -400,8 +789,10 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .typing .dot,
-  .caret {
+  .activity .dot,
+  .activity-icon,
+  .caret,
+  .conversation-busy {
     animation: none;
   }
 }

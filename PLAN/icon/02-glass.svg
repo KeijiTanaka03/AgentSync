@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2D2E37"/>
+      <stop offset="1" stop-color="#0C0C10"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.25" cy="0.1" r="0.9">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.14"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFB089"/>
+      <stop offset="0.5" stop-color="#EF7442"/>
+      <stop offset="1" stop-color="#B83D16"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7DF0C4"/>
+      <stop offset="0.5" stop-color="#22B887"/>
+      <stop offset="1" stop-color="#08694E"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="32"/></filter>
+    <filter id="frost" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="20"/></filter>
+    <filter id="shadow" color-interpolation-filters="sRGB" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <path id="back" d="M330 222 H534 A126 126 0 0 1 660 348 V424 A126 126 0 0 1 534 550 H354 C318 586 250 612 186 622 C206 576 204 510 204 452 V348 A126 126 0 0 1 330 222 Z"/>
+    <path id="front" d="M494 440 H698 A126 126 0 0 1 824 566 V662 C824 722 832 782 852 832 C796 818 744 796 708 762 H494 A126 126 0 0 1 368 636 V566 A126 126 0 0 1 494 440 Z"/>
+    <clipPath id="backClip"><use href="#back"/></clipPath>
+    <clipPath id="frontClip"><use href="#front"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <g clip-path="url(#tile)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+    <g filter="url(#glow)" opacity="0.6">
+      <use href="#back" fill="#EF6A35"/>
+      <use href="#front" fill="#1DB784"/>
+    </g>
+    <use href="#back" fill="url(#orange)"/>
+    <rect x="200" y="218" width="470" height="220" fill="url(#gloss)" clip-path="url(#backClip)"/>
+    <use href="#back" fill="none" stroke="#FFFFFF" stroke-opacity="0.3" stroke-width="5"/>
+    <!-- frosted glass: the orange bubble shows through, blurred -->
+    <use href="#front" fill="#0C0C10" filter="url(#lift)" opacity="0.6"/>
+    <g clip-path="url(#frontClip)">
+      <use href="#back" fill="#F08050" filter="url(#frost)"/>
+    </g>
+    <use href="#front" fill="url(#green)" opacity="0.84"/>
+    <rect x="364" y="436" width="470" height="240" fill="url(#gloss)" clip-path="url(#frontClip)"/>
+    <use href="#front" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="5"/>
+    <g fill="#FFFFFF">
+      <circle cx="502" cy="602" r="28"/>
+      <circle cx="596" cy="602" r="28"/>
+      <circle cx="690" cy="602" r="28"/>
+    </g>
+  </g>
+</svg>
