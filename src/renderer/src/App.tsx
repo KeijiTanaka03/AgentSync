@@ -13,6 +13,15 @@ export function App() {
     void window.agentsync.createConversation().then(setActiveId, (error: unknown) => console.error(errorMessage(error)))
   }, [])
 
+  const createCodeConversation = useCallback(() => {
+    void window.agentsync.createCodeConversation().then(
+      (id) => {
+        if (id) setActiveId(id)
+      },
+      (error: unknown) => console.error(errorMessage(error)),
+    )
+  }, [])
+
   // On start, open the most recent conversation (or a new one when there is none).
   useEffect(() => {
     if (!conversations || started.current) return
@@ -26,8 +35,9 @@ export function App() {
     () =>
       window.agentsync.onMenuCommand((command) => {
         if (command === 'new-conversation') createConversation()
+        else if (command === 'new-code-conversation') createCodeConversation()
       }),
-    [createConversation],
+    [createConversation, createCodeConversation],
   )
 
   const deleteConversation = (id: string) => {
@@ -56,6 +66,7 @@ export function App() {
         activeId={activeId}
         onSelect={setActiveId}
         onCreate={createConversation}
+        onCreateCode={createCodeConversation}
         onRename={renameConversation}
         onDelete={deleteConversation}
       />

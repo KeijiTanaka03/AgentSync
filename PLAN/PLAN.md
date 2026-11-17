@@ -183,13 +183,22 @@ AgentSync.app (Electron)
 
 - Adapter のインターフェースに `mode: chat | read-only | write` と `onToolEvent` / `onApprovalRequest` を追加する
 
+### 7.6 実装で決めたこと（2026-11-17）
+- 各ターンの権限（`access`）: チャット会話は `chat`（ツールなし）。コーディング会話では、宛先にした AI だけが `write`、「全員」宛て・対話モード・レビュー役は `read`。ほかの AI が `write` で作業している間に頼まれた AI は `read` になる（書き込むのは常に 1 体だけ）
+- Claude: `read` は `--tools Read,Glob,Grep --permission-prompts none`。`write` は `--input-format stream-json --permission-mode manual|auto --permission-prompts host --permission-prompt-tool stdio`。許可が必要な操作の前に `control_request`（`can_use_tool`、ツール名と入力付き）が届き、`control_response` の `behavior: allow|deny` で答える。システムプロンプトは `--append-system-prompt`（Claude Code の普段の指示の上にグループの説明を足す）。作業フォルダの外へのファイル編集（Write・Edit など）は、聞かずに断る
+- Codex: `read` は `sandbox: read-only`・`approvalPolicy: never`。`write` は `workspace-write` と、承認制なら `untrusted`、auto なら `on-request`。同じスレッドで読み取りと書き込みが入れ替わるので、`turn/start` ごとに `approvalPolicy` と `sandboxPolicy` を渡す。承認は app-server からのリクエスト（`item/commandExecution/requestApproval`・`item/fileChange/requestApproval`）に `accept|decline` で答える。コマンドの `commandActions` が読み取り・一覧・検索だけなら、聞かずに許可する（`untrusted` では `cat` や `sed -n` も聞いてくるため）。ファイル変更の差分は、同じ ID の `fileChange` 項目から取って承認カードに出す
+- 承認カード: 「許可」「今回は全部許可」（その返事の残りも許可）「拒否」。返事が終わる・止まると、答えていないカードは「拒否」として閉じる。答えを待つ間、その AI の状態は「あなたの承認待ち」
+- 作業ログ: Claude は `tool_use`／`tool_result`、Codex は `item/started`／`item/completed`（コマンドは `/bin/zsh -lc "…"` を外して表示）。返事ごとに会話のファイルにも残す
+- 実装＋レビュー: 入力欄の依頼（空なら直前の依頼）を実装役宛ての発言として載せ、ほかの AI には返事をさせずにループを始める。実装役のターンが終わるたびに、アプリが `git diff HEAD` と新しいファイル（未追跡）の中身を読み、「変更をレビュー役に渡しました · N ファイル、+a −b」のお知らせ（差分は「差分を見る」で開ける）としてレビュー役に渡す。リポジトリには何も書き込まない。レビュー役の返事の最初の行が `APPROVED` なら終わり、上限（3 往復）でも止まる。始めるときに main／master にいれば、作業ブランチで進めるよう勧める
+- ブランチ名は、会話を開いたときと、書き込みのターンが終わるたびに `git rev-parse --abbrev-ref HEAD` で読み直す
+
 ## 8. 制約・リスク
 - **使用枠**: Pro の利用制限に当たると CLI がエラーを返す → そのメッセージをチャットに表示し、対話を止める
 - **対話モードの止め忘れ**: 回数の制限がないので、止めないと使用枠を使い続ける → 対話中はバーを常に出し、アプリのウィンドウを閉じたら自動で止める
 - **規約**: どちらの CLI も「本人が自分のマシンで使う」範囲で使う。サブスクの認証を外部に公開・共有しない（アプリはネットワークのポートを開けない）
 - **速度**: CLI はプロセスの起動があるぶん API より遅い（1 発言あたり数秒の上乗せ）。まず動かしてみて、遅すぎる場合はプロセスを常駐させる方式を検討する
 - CLI のオプションはバージョンによって変わる可能性がある → 11 章の確認結果を基準にし、CLI を更新したら `npm run test:e2e` で確かめる
-- **コーディングモードの承認の中継**: CLI が承認リクエストを外部に出す方法（Claude の `--permission-prompt-tool`、Codex の app-server）が想定どおりに動くかが一番のリスク → 仕組みがあることは確認済み（11 章）。実際の中継は Phase 5 で確かめる
+- **コーディングモードの承認の中継**: CLI が承認リクエストを外部に出す方法（Claude の `--permission-prompt-tool`、Codex の app-server）が想定どおりに動くかが一番のリスク → Phase 5 で、どちらも実際に中継できることを確かめた（11 章）
 - **auto モード**: 確認なしで編集・実行するので、誤操作に気づきにくい → 作業ブランチで使うよう促す。auto の間はヘッダーに目立つバッジを出す
 - **使用枠の消費**: 実装＋レビューのループは使用枠を多く使う → 往復回数の上限を低めにする（既定 3）
 
@@ -200,7 +209,7 @@ AgentSync.app (Electron)
   - 使ってみての手直し（2026-11-17）: 各 AI がいま何をしているかの表示（2 人が同時に動いていることが分かるように）、サイドバーからの名前の変更（「…」メニュー・右クリック・ダブルクリック）、AI ごとの考える深さ（effort）の切り替え（F7 の一部を前倒し）、アイコンの作り直し（[icon/](icon/index.html) の 10 案から ④ ネオンの吹き出しを選んだ）
 - **Phase 3 対話モード**（実装済み）: 6 章（ボタンで開始・停止、割り込み）
 - **Phase 4 モデルの切り替えと仕上げ**（実装済み）: ヘッダーのチップのメニューでモデルを選ぶ（F7）、「CLI の場所…」メニュー、Claude.ai 風の細部の仕上げ（返事とコードブロックのコピー、コードブロックの言語名、「最新へ」ボタン、1 回の改行をそのまま表示、サイドバーのロゴ、対話モードと停止のショートカット、ページに許す権限をクリップボードへの書き込みだけにする）
-- **Phase 5 コーディングモード**: 単独で使う機能（フォルダ選択・ツールログ・承認カード）→ 設計の対話（読み取り専用）→ 実装＋レビューのループ
+- **Phase 5 コーディングモード**（実装済み）: 単独で使う機能（フォルダ選択・ツールログ・承認カード）→ 設計の対話（読み取り専用）→ 実装＋レビューのループ
 - **将来**: API キー方式への切り替え、3 体目の AI、エクスポート、右側の diff パネル、別々の worktree での競作
 
 ## 10. 決定事項メモ
@@ -267,3 +276,11 @@ AgentSync.app (Electron)
 - CLI が見つからないときの説明は「AgentSync > CLI の場所…」を案内する。指定した場所に CLI がない場合も同じ
 - Markdown では 1 回の改行が空白になり、1 行に 1 つずつ書いた返事が 1 行につながっていた → `remark-breaks` で改行のまま表示する
 - テスト用に起動したアプリのウィンドウが後ろにあると、描画が間引かれて、スクロールのイベントや滑らかなスクロールが遅れる。DevTools プロトコルの `Page.bringToFront` で前に出してから確かめる
+
+### Phase 5 で確かめたこと（2026-11-17）
+- Claude Code は `--permission-prompts host` だけでは承認を問い合わせず、自動で断る。`--permission-prompt-tool stdio` も付けると、操作の前に `can_use_tool` の制御リクエストが届く（Agent SDK と同じ仕組み）。「許可」で実行され、「拒否」なら Claude は実行せずに理由を返した
+- Codex は `untrusted` で、コマンドの前に `item/commandExecution/requestApproval`（コマンド・作業フォルダ・`commandActions` 付き）、パッチの前に `item/fileChange/requestApproval` を送る。`on-request` では作業フォルダの中の作業を聞かずに進めた
+- 使い捨てのプロジェクトで、承認制のまま「Claude に関数名の変更」「GPT に処理の追加」を頼み、カードで許可するとファイルが変わった。「全員」宛てでは 2 人とも読み取り専用でカードは出ず、auto ではカードなしで Claude が README を更新し、GPT に削除を頼んでカードで拒否するとファイルは残った
+- 実装＋レビュー（auto、effort low）: Claude が実装（編集と `node greet.js` で確認、約 28 秒）→ 差分をレビュー役に渡す → GPT が APPROVED を返して止まった（合計約 35 秒）。main ブランチだったので、作業ブランチを勧めるお知らせが出た
+- 作業ログの「実行中」の行に、行と点の両方で同じクラス名（`work-running`）を使っていて、行が点の大きさ（幅 7px）につぶれていた → 点を `work-dot` に分けた
+

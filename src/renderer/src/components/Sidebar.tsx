@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ConversationSummary } from '../../../shared/types'
-import { BrandMark, LoopIcon, MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
+import { BrandMark, CodeIcon, FolderIcon, LoopIcon, MoreIcon, PencilIcon, PlusIcon, TrashIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
 
@@ -9,6 +9,8 @@ interface SidebarProps {
   activeId: string | null
   onSelect(id: string): void
   onCreate(): void
+  /** Asks for a project folder and opens a coding conversation there. */
+  onCreateCode(): void
   onRename(id: string, title: string): void
   onDelete(id: string): void
 }
@@ -34,7 +36,7 @@ function groupOf(iso: string, now: Date): (typeof GROUPS)[number] {
   return 'それ以前'
 }
 
-export function Sidebar({ conversations, activeId, onSelect, onCreate, onRename, onDelete }: SidebarProps) {
+export function Sidebar({ conversations, activeId, onSelect, onCreate, onCreateCode, onRename, onDelete }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const now = new Date()
@@ -62,6 +64,11 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onRename,
         <PlusIcon />
         新しい会話
         <kbd>⌘N</kbd>
+      </button>
+      <button type="button" className="new-code-conversation" onClick={onCreateCode}>
+        <FolderIcon />
+        コーディング会話…
+        <kbd>⇧⌘N</kbd>
       </button>
       <div className="conversations">
         {grouped.map((group) => (
@@ -100,9 +107,15 @@ export function Sidebar({ conversations, activeId, onSelect, onCreate, onRename,
                           onClick={() => onSelect(id)}
                           onDoubleClick={() => setEditingId(id)}
                         >
+                          {conversation.kind === 'code' && <CodeIcon size={13} className="conversation-kind" />}
                           <span className="conversation-title">{title}</span>
-                          {conversation.dialogue ? (
-                            <span className="conversation-dialogue" role="img" aria-label="対話中" title="対話中">
+                          {conversation.dialogue || conversation.review ? (
+                            <span
+                              className="conversation-dialogue"
+                              role="img"
+                              aria-label={conversation.review ? '実装＋レビュー中' : '対話中'}
+                              title={conversation.review ? '実装＋レビュー中' : '対話中'}
+                            >
                               <LoopIcon size={14} />
                             </span>
                           ) : (

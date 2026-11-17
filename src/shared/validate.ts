@@ -1,4 +1,13 @@
-import { AGENT_IDS, MAX_MESSAGE_LENGTH, MAX_TITLE_LENGTH, type AgentId, type SendRequest, type SendTarget } from './types'
+import {
+  AGENT_IDS,
+  MAX_MESSAGE_LENGTH,
+  MAX_TITLE_LENGTH,
+  type AgentId,
+  type ApprovalDecision,
+  type ApprovalMode,
+  type SendRequest,
+  type SendTarget,
+} from './types'
 
 const TARGETS: readonly SendTarget[] = ['all', ...AGENT_IDS]
 
@@ -49,6 +58,18 @@ export function isModel(value: unknown): value is string {
 export function parseModel(raw: unknown): string | null {
   if (raw === null) return null
   if (!isModel(raw)) throw new Error('モデルの指定が不正です')
+  return raw
+}
+
+/** Validates the answer to an approval card that arrived over IPC. */
+export function parseApproval(id: unknown, decision: unknown): { id: string; decision: ApprovalDecision } {
+  if (typeof id !== 'string' || !/^\d{1,9}-\d{1,9}$/.test(id)) throw new Error('承認の指定が不正です')
+  if (decision !== 'allow' && decision !== 'allow-all' && decision !== 'deny') throw new Error('承認の指定が不正です')
+  return { id, decision }
+}
+
+export function parseApprovalMode(raw: unknown): ApprovalMode {
+  if (raw !== 'ask' && raw !== 'auto') throw new Error('承認の方式が不正です')
   return raw
 }
 

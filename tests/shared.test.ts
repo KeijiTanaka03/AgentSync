@@ -15,12 +15,16 @@ import {
 
 const empty: ChatState = {
   title: 'テスト',
+  kind: 'chat',
+  workspace: null,
+  approvalMode: 'ask',
   messages: [],
   agents: {
     claude: { id: 'claude', model: null, activeModel: null, effort: null, busy: false, activity: null },
     gpt: { id: 'gpt', model: null, activeModel: null, effort: null, busy: false, activity: null },
   },
   dialogue: null,
+  review: null,
 }
 
 const reply: ChatMessage = { id: 1, from: 'claude', to: 'user', text: '', at: '2026-11-16T05:00:00.000Z', status: 'streaming' }

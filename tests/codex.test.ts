@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { CodexAdapter } from '../src/main/agents/codex'
+import { CodexAdapter, unwrapShell } from '../src/main/agents/codex'
 import type { RpcConnection } from '../src/main/agents/jsonRpc'
 import type { AgentRunRequest } from '../src/main/agents/types'
-import type { AgentActivity } from '../src/shared/types'
+import type { AgentActivity, ToolLogEntry } from '../src/shared/types'
+import type { ApprovalRequest } from '../src/main/agents/types'
 
 /** A stand-in for `codex app-server` that records requests and lets the test push notifications. */
 class FakeAppServer implements RpcConnection {
@@ -75,11 +76,15 @@ function request(overrides: Partial<AgentRunRequest> = {}) {
     cwd: '/tmp/chat',
     model: null,
     effort: null,
+    access: 'chat',
+    approval: 'ask',
     signal: controller.signal,
     onSession: (id) => sessions.push(id),
     onModel: (model) => models.push(model),
     onText: (text) => texts.push(text),
     onActivity: (activity) => activities.push(activity),
+    onTool: () => {},
+    requestApproval: async () => 'deny',
     ...overrides,
   }
   return { req, texts, sessions, models, activities, controller }
@@ -285,3 +290,98 @@ describe('CodexAdapter', () => {
     await expect(result).rejects.toThrow('Codex CLI との接続が切れました')
   })
 })
+
+describe('Codex in a coding conversation', () => {
+  /** Starts a write turn in /work/app; returns what it reports and asks. */
+  async function writeTurn(answer: 'allow' | 'deny' = 'allow') {
+    const { server, adapter } = setup()
+    const tools: ToolLogEntry[] = []
+    const asked: ApprovalRequest[] = []
+    const { req } = request({
+      cwd: '/work/app',
+      access: 'write',
+      approval: 'ask',
+      onTool: (tool) => tools.push(tool),
+      requestApproval: async (ask) => {
+        asked.push(ask)
+        return answer
+      },
+    })
+    const done = adapter.run(req)
+    await flush()
+    await flush()
+    return { server, tools, asked, done }
+  }
+
+  it('lets the project be changed only on write turns, asking first unless auto', async () => {
+    const { server, done } = await writeTurn()
+    expect(server.requests.find((r) => r.method === 'thread/start')!.params).toMatchObject({ cwd: '/work/app', sandbox: 'workspace-write', approvalPolicy: 'untrusted' })
+    expect(server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+    })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+
+    const read = setup()
+    const reading = read.adapter.run(request({ cwd: '/work/app', access: 'read' }).req)
+    await flush()
+    await flush()
+    expect(read.server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly' } })
+    read.server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await reading
+  })
+
+  it('asks before a command, but not before one that only reads or searches', async () => {
+    const { server, asked, done } = await writeTurn('allow')
+    const ask = (params: Record<string, unknown>) => server.onServerRequest('item/commandExecution/requestApproval', { threadId: 'thread-1', turnId: 'turn-1', ...params })
+    await expect(ask({ itemId: 'c1', command: '/bin/zsh -lc "cat a.ts && rg TODO"', commandActions: [{ type: 'read' }, { type: 'search' }] })).resolves.toEqual({ decision: 'accept' })
+    expect(asked).toEqual([])
+    await expect(ask({ itemId: 'c2', command: '/bin/zsh -lc "npm test"', commandActions: [{ type: 'unknown' }] })).resolves.toEqual({ decision: 'accept' })
+    expect(asked).toEqual([{ kind: 'command', title: 'コマンドを実行: npm test', detail: 'npm test' }])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
+
+  it('shows the diff when asking before a file change, and says no when told to', async () => {
+    const { server, asked, tools, done } = await writeTurn('deny')
+    const change = { type: 'fileChange', id: 'f1', changes: [{ path: '/work/app/src/a.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-a\n+b' }], status: 'inProgress' }
+    server.push('item/started', { turnId: 'turn-1', item: change })
+    await expect(server.onServerRequest('item/fileChange/requestApproval', { threadId: 'thread-1', turnId: 'turn-1', itemId: 'f1' })).resolves.toEqual({ decision: 'decline' })
+    expect(asked).toEqual([{ kind: 'edit', title: 'ファイルを変更: src/a.ts', detail: '--- src/a.ts\n@@ -1 +1 @@\n-a\n+b' }])
+    server.push('item/completed', { turnId: 'turn-1', item: { ...change, status: 'declined' } })
+    expect(tools).toEqual([
+      { id: 'f1', kind: 'edit', title: 'src/a.ts', status: 'running' },
+      { id: 'f1', kind: 'edit', title: 'src/a.ts', status: 'failed' },
+    ])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
+
+  it('logs commands as the model wrote them', async () => {
+    const { server, tools, done } = await writeTurn()
+    server.push('item/started', { turnId: 'turn-1', item: { type: 'commandExecution', id: 'c1', command: '/bin/zsh -lc "npm test"', commandActions: [{ type: 'unknown' }], status: 'inProgress' } })
+    server.push('item/completed', { turnId: 'turn-1', item: { type: 'commandExecution', id: 'c1', command: '/bin/zsh -lc "npm test"', commandActions: [{ type: 'unknown' }], status: 'completed', exitCode: 1 } })
+    server.push('item/started', { turnId: 'turn-1', item: { type: 'commandExecution', id: 'c2', command: "/bin/zsh -lc 'cat README.md'", commandActions: [{ type: 'read' }], status: 'inProgress' } })
+    expect(tools).toEqual([
+      { id: 'c1', kind: 'command', title: 'npm test', status: 'running' },
+      { id: 'c1', kind: 'command', title: 'npm test', status: 'failed' },
+      { id: 'c2', kind: 'read', title: 'cat README.md', status: 'running' },
+    ])
+    expect(unwrapShell('/bin/bash -lc "echo \\"hi\\""')).toBe('echo "hi"')
+    expect(unwrapShell('ls -la')).toBe('ls -la')
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
+
+  it('refuses approval requests when no turn is running on the thread', async () => {
+    const { server, adapter } = setup()
+    const done = adapter.run(request({ cwd: '/work/app', access: 'write' }).req)
+    await flush()
+    await flush()
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+    await expect(server.onServerRequest('item/commandExecution/requestApproval', { threadId: 'thread-1', itemId: 'x' })).rejects.toThrow()
+  })
+})
+

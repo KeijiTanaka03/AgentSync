@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatSystemPrompt, collectUnseen, formatUnseen, replyTarget } from '../src/main/chat/prompt'
+import { chatSystemPrompt, collectUnseen, formatUnseen, isApproved, replyTarget, turnNote } from '../src/main/chat/prompt'
 import type { ChatMessage } from '../src/shared/types'
 
 let id = 0
@@ -73,6 +73,29 @@ describe('notices from AgentSync', () => {
   })
 })
 
+describe('実装＋レビュー notices', () => {
+  const start = message({ from: 'system', to: 'all', text: 'ここから実装＋レビュー', notice: 'review-start', implementer: 'claude' })
+  const diff = message({ from: 'system', to: 'all', text: '変更を渡しました', notice: 'review-diff', implementer: 'claude', detail: '-a\n+b' })
+
+  it('give each agent its role', () => {
+    expect(formatUnseen([start], 'claude')).toContain('あなたが実装役、GPT がレビュー役です。')
+    expect(formatUnseen([start], 'gpt')).toContain('Claude が実装役、あなたがレビュー役です。')
+    expect(formatUnseen([start], 'gpt')).toContain('返事の最初の行に APPROVED とだけ書いてください')
+  })
+
+  it('hand the diff to the reviewer only', () => {
+    expect(formatUnseen([diff], 'gpt')).toContain('```diff\n-a\n+b\n```')
+    expect(formatUnseen([diff], 'claude')).toBe('【AgentSync からのお知らせ】\nいまの変更（git diff）を、レビュー役の GPT に渡しました。')
+  })
+
+  it('recognise APPROVED on the first line only', () => {
+    expect(isApproved('APPROVED')).toBe(true)
+    expect(isApproved('\n**APPROVED**\nテストも通っています。')).toBe(true)
+    expect(isApproved('指摘があります。\nAPPROVED ではありません')).toBe(false)
+    expect(isApproved('NOT APPROVED')).toBe(false)
+  })
+})
+
 describe('replyTarget', () => {
   it('answers whoever last addressed the agent or everyone', () => {
     const toAll = message({ from: 'user', to: 'all', text: 'a' })
@@ -90,3 +113,12 @@ describe('chatSystemPrompt', () => {
     expect(chatSystemPrompt('gpt')).toContain('あなたは「GPT」')
   })
 })
+
+describe('turnNote', () => {
+  it('lets a read-only turn read files with commands, but not change them', () => {
+    const note = turnNote('read', 'ask', 'app')
+    expect(note).toContain('ファイルを読んだり検索したりするコマンド（cat・sed -n・rg・ls など）は使えます')
+    expect(note).not.toContain('コマンドの実行はしないでください')
+  })
+})
+

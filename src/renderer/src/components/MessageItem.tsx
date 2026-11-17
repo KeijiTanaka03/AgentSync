@@ -1,8 +1,9 @@
-import { DISPLAY_NAMES, type AgentActivity, type ChatMessage, type Recipient } from '../../../shared/types'
+import { DISPLAY_NAMES, type AgentActivity, type ApprovalDecision, type ChatMessage, type Recipient } from '../../../shared/types'
 import { ActivityLine } from './Activity'
 import { Avatar } from './Avatar'
 import { CopyButton } from './CopyButton'
 import { MarkdownText } from './MarkdownText'
+import { ApprovalCard, DiffText, WorkLog } from './WorkLog'
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
@@ -27,14 +28,27 @@ interface MessageItemProps {
   activity: AgentActivity | null
   /** You said this during a dialogue: it goes to the next speaker. */
   interrupt?: boolean
+  /** Answers an approval card in this reply. */
+  onApprove?(approvalId: string, decision: ApprovalDecision): void
 }
 
-export function MessageItem({ message, activity, interrupt = false }: MessageItemProps) {
+export function MessageItem({ message, activity, interrupt = false, onApprove }: MessageItemProps) {
   const time = formatTime(message.at)
 
   // A notice from AgentSync, shown as a line across the timeline (「ここから対話モード」).
   if (message.from === 'system') {
-    return <p className={`notice notice-${message.notice ?? 'info'}`}>{message.text}</p>
+    const line = <p className={`notice notice-${message.notice ?? 'info'}`}>{message.text}</p>
+    if (!message.detail) return line
+    // 実装＋レビュー: the diff handed to the reviewer, folded.
+    return (
+      <div className="notice-block">
+        {line}
+        <details className="notice-detail">
+          <summary>差分を見る</summary>
+          <DiffText text={message.detail} className="notice-diff" />
+        </details>
+      </div>
+    )
   }
 
   if (message.from === 'user') {
@@ -63,9 +77,13 @@ export function MessageItem({ message, activity, interrupt = false }: MessageIte
           <b>{DISPLAY_NAMES[agent]}</b> · {replyLabel(message.to)} · {time}
         </div>
         <div className={`bubble bubble-agent bubble-${agent}`} aria-busy={streaming}>
+          {message.tools && message.tools.length > 0 && <WorkLog tools={message.tools} live={streaming} />}
           {message.text !== '' && <MarkdownText text={message.text} />}
           {writing && <span className="caret" aria-hidden="true" />}
           {doing && !writing && <ActivityLine activity={doing} since={message.at} />}
+          {message.approvals?.map((approval) => (
+            <ApprovalCard key={approval.id} approval={approval} onAnswer={(decision) => onApprove?.(approval.id, decision)} />
+          ))}
           {message.status === 'stopped' && <p className="note">停止しました</p>}
           {message.status === 'error' && (
             <p className="error" role="alert">

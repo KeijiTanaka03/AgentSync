@@ -22,6 +22,10 @@
   --danger-bg: #f8e9e7;
   --on-strong: #faf9f5;
   --dialogue-bg: #fbefe8;
+  --diff-add: #e3f1e8;
+  --diff-del: #f8e4e1;
+  --diff-add-ink: #1f6b46;
+  --diff-del-ink: #9a2f2f;
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
   --font-serif: 'Hiragino Mincho ProN', 'Yu Mincho', 'Noto Serif JP', serif;
@@ -50,6 +54,10 @@
     --danger-bg: #3a2422;
     --on-strong: #1f1e1c;
     --dialogue-bg: #33261f;
+    --diff-add: #1f3328;
+    --diff-del: #3a2422;
+    --diff-add-ink: #8fd6b0;
+    --diff-del-ink: #f0a39b;
   }
 }
 
@@ -141,6 +149,39 @@ button {
 
 .new-conversation:hover {
   border-color: var(--muted);
+}
+
+/* The second way in: a coding conversation in a project folder. */
+.new-code-conversation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: -8px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-2);
+  font-size: 13.5px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.new-code-conversation:hover {
+  background: var(--sidebar-hover);
+}
+
+.new-code-conversation kbd {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.conversation-kind {
+  flex: none;
+  color: var(--muted);
 }
 
 .new-conversation kbd {
@@ -466,6 +507,46 @@ button {
 .header-title {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-title h1 {
+  min-width: 0;
+}
+
+.workspace-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 280px;
+  padding: 2px 9px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workspace-branch-icon {
+  margin-left: 4px;
+  color: var(--muted);
+}
+
+/* Changes go ahead without asking: hard to miss. */
+.auto-badge {
+  flex: none;
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: var(--claude);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .header h1 {
@@ -911,6 +992,9 @@ button {
   .message-actions {
     transition: none;
   }
+  .work-dot {
+    animation: none;
+  }
   .activity .dot,
   .activity-icon,
   .caret,
@@ -933,6 +1017,222 @@ button {
   color: var(--danger);
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+/* ---------- coding ---------- */
+
+.approval-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+}
+
+.approval-toggle button {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.approval-toggle button[aria-pressed='true'] {
+  background: var(--text);
+  color: var(--on-strong);
+}
+
+.approval-toggle button:last-child[aria-pressed='true'] {
+  background: var(--claude);
+  color: #ffffff;
+}
+
+/* 作業ログ: what the agent read, searched, edited and ran. */
+.work-log {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.md + .work-log {
+  margin-top: 8px;
+}
+
+.work-log summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.work-log ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--code-bg);
+  list-style: none;
+}
+
+.work-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.work-step svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.work-step code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-failed code,
+.work-failed .work-mark {
+  color: var(--danger);
+}
+
+/* The dot of a step still running (the row itself is .work-running). */
+.work-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--claude);
+  animation: blink 1.2s infinite ease-in-out;
+}
+
+/* An approval card: what the agent wants to do, and the three answers. */
+.approval-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--claude);
+  border-radius: 12px;
+  background: var(--dialogue-bg);
+}
+
+.approval-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.approval-detail {
+  max-height: 260px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.diff-add {
+  display: block;
+  background: var(--diff-add);
+  color: var(--diff-add-ink);
+}
+
+.diff-del {
+  display: block;
+  background: var(--diff-del);
+  color: var(--diff-del-ink);
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.approval-actions button {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.approval-actions .approval-allow {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--on-strong);
+}
+
+.approval-actions .approval-deny {
+  color: var(--danger);
+}
+
+.approval-done {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.approval-denied {
+  color: var(--danger);
+}
+
+.review-menu {
+  width: 300px;
+}
+
+/* A notice with something to open: the diff handed to the reviewer. */
+.notice-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.notice-detail {
+  align-self: center;
+  max-width: min(100%, 760px);
+  font-size: 12.5px;
+}
+
+.notice-detail summary {
+  color: var(--muted);
+  text-align: center;
+  cursor: pointer;
+}
+
+.notice-diff {
+  max-height: 360px;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.notice-review-start,
+.notice-review-diff {
+  color: var(--gpt-ink);
 }
 
 /* ---------- dialogue mode ---------- */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Orchestrator } from '../src/main/chat/orchestrator'
+import { Orchestrator, type GitDiff } from '../src/main/chat/orchestrator'
 import type { ConversationContent } from '../src/main/store/conversationStore'
 import type { ChatEventEnvelope } from '../src/shared/types'
 import { FakeAgent, flush } from './fakeAgent'
@@ -258,6 +258,7 @@ describe('Orchestrator', () => {
       ...options,
       initial: {
         title: '前の会話',
+        approvalMode: 'ask',
         messages: [],
         participants: {
           claude: { model: null, effort: 'max', sessionId: null, delivered: [] },
@@ -272,6 +273,7 @@ describe('Orchestrator', () => {
   it('treats a reply that was streaming when the app closed as stopped', () => {
     const { messages } = setup({
       title: '途中',
+      approvalMode: 'ask',
       messages: [{ id: 1, from: 'claude', to: 'user', text: '途中まで', at: '2026-11-16T05:00:00.000Z', status: 'streaming' }],
       participants: {
         claude: { model: 'haiku', effort: null, sessionId: 's1', delivered: [] },
@@ -412,6 +414,7 @@ describe('Orchestrator dialogue mode', () => {
   it('starts with GPT when you spoke to GPT last', () => {
     const { orchestrator, messages } = setup({
       title: 't',
+      approvalMode: 'ask',
       messages: [{ id: 1, from: 'user', to: 'gpt', text: 'GPT から話して', at: '2026-11-17T05:00:00.000Z', status: 'done' }],
       participants: {
         claude: { model: null, effort: null, sessionId: null, delivered: [] },
@@ -426,6 +429,7 @@ describe('Orchestrator dialogue mode', () => {
   it('closes a dialogue the app was in when it quit', () => {
     const { messages } = setup({
       title: 't',
+      approvalMode: 'ask',
       messages: [
         { id: 1, from: 'user', to: 'all', text: 'お題', at: '2026-11-17T05:00:00.000Z', status: 'done' },
         { id: 2, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at: '2026-11-17T05:00:01.000Z', status: 'done', notice: 'dialogue-start' },
@@ -442,6 +446,248 @@ describe('Orchestrator dialogue mode', () => {
       [3, 'claude', 'stopped', undefined],
       [4, 'system', 'done', 'dialogue-stop'],
     ])
+  })
+})
+
+describe('Orchestrator in a coding conversation', () => {
+  function coding(gitBranch?: (dir: string) => Promise<string | null>) {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const events: ChatEventEnvelope[] = []
+    const orchestrator = new Orchestrator({
+      adapters: { claude, gpt },
+      cwd: '/tmp/agentsync-chat',
+      workdir: '/work/app',
+      emit: (envelope) => events.push(envelope),
+      ...(gitBranch ? { gitBranch } : {}),
+    })
+    const messages = () => orchestrator.snapshot().state.messages
+    return { claude, gpt, events, orchestrator, messages }
+  }
+
+  it('runs in the project folder; only the agent spoken to may change it, one at a time', async () => {
+    const { claude, gpt, orchestrator } = coding()
+    orchestrator.send({ text: 'テストを直して', to: 'claude' })
+    await flush()
+    const call = claude.calls[0]!
+    expect([call.access, call.approval, call.cwd]).toEqual(['write', 'ask', '/work/app'])
+    expect(call.systemPrompt).toContain('プロジェクトのフォルダ /work/app')
+    expect(call.prompt).toMatch(/^【AgentSync からのお知らせ】\nこのターンでは、作業フォルダ（app）のファイルの変更とコマンドの実行ができます。/)
+    expect(call.prompt).toContain('【ユーザー → あなた】\nテストを直して')
+
+    // Claude is still changing things, so GPT may only read.
+    orchestrator.send({ text: '設計を見て', to: 'gpt' })
+    await flush()
+    expect(gpt.calls[0]!.access).toBe('read')
+    expect(gpt.calls[0]!.prompt).toMatch(/^【AgentSync からのお知らせ】\nこのターンは読み取り専用です。/)
+    claude.reply('直しました')
+    gpt.reply('良さそう')
+    await flush()
+
+    orchestrator.send({ text: '二人で見て', to: 'all' })
+    await flush()
+    expect([claude.calls[1]!.access, gpt.calls[1]!.access]).toEqual(['read', 'read'])
+  })
+
+  it('shows approval cards and passes the answers to the agent; 「今回は全部許可」 covers the rest of the reply', async () => {
+    const { claude, orchestrator, messages } = coding()
+    orchestrator.send({ text: 'ビルドして', to: 'claude' })
+    await flush()
+    const first = claude.ask({ kind: 'command', title: 'コマンドを実行: npm run build', detail: 'npm run build' })
+    expect(messages().at(-1)!.approvals).toEqual([
+      { id: '2-1', kind: 'command', title: 'コマンドを実行: npm run build', detail: 'npm run build', status: 'pending' },
+    ])
+    expect(orchestrator.info('claude').activity).toEqual({ kind: 'waiting' })
+    orchestrator.approve('2-1', 'allow-all')
+    await expect(first).resolves.toBe('allow')
+    await expect(claude.ask({ kind: 'edit', title: 'ファイルを編集: a.ts', detail: null })).resolves.toBe('allow')
+    expect(messages().at(-1)!.approvals!.map((a) => a.status)).toEqual(['allowed', 'allowed'])
+
+    orchestrator.approve('2-1', 'deny') // already answered: nothing happens
+    claude.reply('ビルドしました')
+    await flush()
+    expect(messages().at(-1)!.approvals!.map((a) => a.status)).toEqual(['allowed', 'allowed'])
+  })
+
+  it('answers a waiting card as soon as the reply is stopped (Codex ends its turn only after that)', async () => {
+    const { gpt, orchestrator, messages } = coding()
+    orchestrator.send({ text: 'テストを実行して', to: 'gpt' })
+    await flush()
+    // This fake, like Codex, does not end its turn until the question is answered.
+    const answer = gpt.ask({ kind: 'command', title: 'コマンドを実行: npm test', detail: 'npm test' })
+    orchestrator.stop()
+    await expect(answer).resolves.toBe('deny')
+    expect(messages().at(-1)!.approvals![0]!.status).toBe('denied')
+  })
+
+  it('treats a card still open when the reply ends as not allowed', async () => {
+    const { claude, orchestrator, messages } = coding()
+    orchestrator.send({ text: '消して', to: 'claude' })
+    await flush()
+    const answer = claude.ask({ kind: 'command', title: 'コマンドを実行: rm -rf dist', detail: 'rm -rf dist' })
+    orchestrator.stop()
+    await expect(answer).resolves.toBe('deny')
+    await flush()
+    expect(messages().at(-1)!.approvals![0]!.status).toBe('denied')
+  })
+
+  it('keeps the steps of a reply as its work log', async () => {
+    const { claude, orchestrator, messages, events } = coding()
+    orchestrator.send({ text: '調べて', to: 'claude' })
+    await flush()
+    claude.tool({ id: 't1', kind: 'read', title: 'src/a.ts', status: 'running' })
+    claude.tool({ id: 't1', kind: 'read', title: 'src/a.ts', status: 'done' })
+    claude.tool({ id: 't2', kind: 'command', title: 'npm test', status: 'running' })
+    expect(messages().at(-1)!.tools).toEqual([
+      { id: 't1', kind: 'read', title: 'src/a.ts', status: 'done' },
+      { id: 't2', kind: 'command', title: 'npm test', status: 'running' },
+    ])
+    expect(events.filter((e) => e.event.type === 'message:tool')).toHaveLength(3)
+  })
+
+  it('shows the folder and its branch, keeps the approval mode, and reads in a dialogue', async () => {
+    let branch = 'main'
+    const { claude, orchestrator } = coding(async () => branch)
+    await flush()
+    expect(orchestrator.snapshot().state).toMatchObject({ kind: 'code', workspace: { path: '/work/app', name: 'app', branch: 'main' }, approvalMode: 'ask' })
+    orchestrator.setApprovalMode('auto')
+    expect(orchestrator.content().approvalMode).toBe('auto')
+
+    orchestrator.send({ text: '作業ブランチで直して', to: 'claude' })
+    await flush()
+    expect(claude.calls[0]!.approval).toBe('auto')
+    branch = 'fix/tests'
+    claude.reply('ブランチを作って直しました')
+    await flush()
+    await flush()
+    expect(orchestrator.snapshot().state.workspace!.branch).toBe('fix/tests') // read again after a write turn
+
+    orchestrator.setDialogue(true)
+    await flush()
+    expect(orchestrator.snapshot().state.dialogue).not.toBeNull()
+  })
+})
+
+describe('Orchestrator 実装＋レビュー', () => {
+  function project(diff: GitDiff | null = { text: '-a\n+b', files: 1, added: 1, removed: 1 }, branch = 'feature') {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({
+      adapters: { claude, gpt },
+      cwd: '/tmp/agentsync-chat',
+      workdir: '/work/app',
+      emit: () => {},
+      gitBranch: async () => branch,
+      gitDiff: async () => diff,
+    })
+    const messages = () => orchestrator.snapshot().state.messages
+    return { claude, gpt, orchestrator, messages }
+  }
+
+  it('lets the implementer change things, hands the diff to the reviewer, and loops until APPROVED', async () => {
+    const { claude, gpt, orchestrator, messages } = project()
+    await flush()
+    orchestrator.send({ text: 'ログイン画面を作って', to: 'all' })
+    await flush()
+    claude.reply('ざっと見ました')
+    gpt.reply('了解')
+    await flush()
+
+    orchestrator.setReview('claude')
+    await flush()
+    expect(orchestrator.snapshot().state.review).toEqual({ implementer: 'claude', reviewer: 'gpt', round: 1, maxRounds: 3, phase: 'implement' })
+    expect(messages().find((m) => m.notice === 'review-start')!.text).toBe('ここから実装＋レビュー · 実装: Claude、レビュー: GPT（最大 3 往復）')
+    expect(claude.calls[1]!.access).toBe('write')
+    expect(claude.calls[1]!.prompt).toContain('あなたが実装役、GPT がレビュー役です。')
+
+    claude.reply('作りました')
+    await flush()
+    await flush()
+    expect(messages().find((m) => m.notice === 'review-diff')).toMatchObject({ text: '変更をレビュー役（GPT）に渡しました · 1 ファイル、+1 −1', detail: '-a\n+b' })
+    expect(gpt.calls[1]!.access).toBe('read')
+    expect(gpt.calls[1]!.prompt).toContain('```diff\n-a\n+b\n```')
+    expect(messages().find((m) => m.text === '作りました')!.to).toBe('gpt')
+
+    gpt.reply('入力チェックがありません')
+    await flush()
+    expect(orchestrator.snapshot().state.review).toMatchObject({ round: 2, phase: 'implement' })
+    expect(claude.calls[2]!.prompt).toContain('【GPT → あなた】\n入力チェックがありません')
+
+    claude.reply('足しました')
+    await flush()
+    await flush()
+    gpt.reply('APPROVED\n良いと思います')
+    await flush()
+    expect(orchestrator.snapshot().state.review).toBeNull()
+    expect(messages().at(-1)).toMatchObject({ notice: 'review-stop', text: 'レビューで承認されました（APPROVED）' })
+    expect(orchestrator.inReview).toBe(false)
+  })
+
+  it('stops at the limit of rounds', async () => {
+    const { claude, gpt, orchestrator, messages } = project()
+    orchestrator.send({ text: '直して', to: 'claude' })
+    await flush()
+    claude.reply('見ました')
+    await flush()
+    orchestrator.setReview('claude')
+    for (let round = 1; round <= 3; round++) {
+      await flush()
+      claude.reply(`直しました ${round}`)
+      await flush()
+      await flush()
+      gpt.reply(`まだです ${round}`)
+      await flush()
+    }
+    expect(messages().at(-1)).toMatchObject({ notice: 'review-stop', text: '上限の 3 往復に達したので、実装＋レビューを止めました' })
+    expect(claude.pending + gpt.pending).toBe(0)
+  })
+
+  it('suggests a working branch on main, says when there is no repository, and stops when told', async () => {
+    const { claude, gpt, orchestrator, messages } = project(null, 'main')
+    await flush()
+    orchestrator.send({ text: '直して', to: 'claude' })
+    await flush()
+    claude.reply('見ました')
+    await flush()
+    orchestrator.setReview('gpt')
+    await flush()
+    expect(messages().find((m) => m.notice === 'review-start')!.text).toContain('いまのブランチは main です。変更をまとめて戻せるよう、作業ブランチで進めるのがおすすめです')
+    expect(gpt.calls.at(-1)!.access).toBe('write')
+    gpt.reply('直しました')
+    await flush()
+    await flush()
+    expect(messages().find((m) => m.notice === 'review-diff')!.text).toBe('git のリポジトリではないので、変更の差分はレビュー役（Claude）に渡せませんでした')
+    expect(claude.calls.at(-1)!.access).toBe('read')
+
+    orchestrator.setReview(null)
+    await flush()
+    expect(messages().at(-1)).toMatchObject({ notice: 'review-stop', text: '実装＋レビューを止めました' })
+    expect(messages().at(-2)!.status).toBe('stopped')
+  })
+
+  it('posts a request typed with the button first, without anyone answering it separately', async () => {
+    const { claude, gpt, orchestrator, messages } = project()
+    orchestrator.setReview('gpt', '  入力チェックを足して  ')
+    await flush()
+    expect(messages().map((m) => [m.from, m.to, m.notice ?? m.text])).toEqual([
+      ['user', 'gpt', '入力チェックを足して'],
+      ['system', 'all', 'review-start'],
+      ['gpt', 'claude', ''],
+    ])
+    expect(orchestrator.snapshot().state.title).toBe('入力チェックを足して')
+    expect(claude.calls).toHaveLength(0)
+    expect(gpt.calls[0]!.access).toBe('write')
+  })
+
+  it('does not start without a coding folder, a request, or while a dialogue runs', async () => {
+    const chat = setup()
+    chat.orchestrator.send({ text: 'hi', to: 'claude' })
+    chat.orchestrator.setReview('claude')
+    expect(chat.orchestrator.inReview).toBe(false)
+
+    const empty = project()
+    empty.orchestrator.setReview('claude')
+    expect(empty.orchestrator.inReview).toBe(false)
   })
 })
 

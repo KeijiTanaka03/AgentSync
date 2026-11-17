@@ -4,6 +4,9 @@ import {
   DEFAULT_TITLE,
   type AgentChoices,
   type AgentId,
+  type ApprovalDecision,
+  type ApprovalMode,
+  type ConversationKind,
   type ChatSnapshot,
   type ConversationEventEnvelope,
   type ConversationSummary,
@@ -11,7 +14,7 @@ import {
 } from '../../shared/types'
 import type { AgentAdapter } from '../agents/types'
 import type { ConversationData, ConversationStore } from '../store/conversationStore'
-import { Orchestrator } from './orchestrator'
+import { Orchestrator, type GitDiff } from './orchestrator'
 
 export interface ChatManagerOptions {
   store: ConversationStore
@@ -29,6 +32,10 @@ export interface ChatManagerOptions {
   onEffortsChange?(efforts: Record<AgentId, string | null>): void
   /** Likewise for models. */
   onModelsChange?(models: Record<AgentId, string | null>): void
+  /** The checked-out git branch of a project folder (null when it is not a repository). */
+  gitBranch?(dir: string): Promise<string | null>
+  /** The uncommitted changes of a project folder, for 実装＋レビュー (null when it is not a repository). */
+  gitDiff?(dir: string): Promise<GitDiff | null>
   now?: () => Date
   /** How long to wait after a change before writing the file. */
   saveDelayMs?: number
@@ -37,6 +44,9 @@ export interface ChatManagerOptions {
 
 interface Entry {
   id: string
+  kind: ConversationKind
+  /** The project folder of a coding conversation. */
+  workdir: string | null
   title: string
   createdAt: string
   updatedAt: string
@@ -66,6 +76,8 @@ export class ChatManager {
     for (const data of options.store.list()) {
       this.entries.set(data.id, {
         id: data.id,
+        kind: data.kind,
+        workdir: data.workdir,
         title: data.title,
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
@@ -83,6 +95,8 @@ export class ChatManager {
         updatedAt: entry.updatedAt,
         busy: entry.orchestrator?.busy ?? false,
         dialogue: entry.orchestrator?.inDialogue ?? false,
+        review: entry.orchestrator?.inReview ?? false,
+        kind: entry.kind,
       }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
@@ -90,7 +104,7 @@ export class ChatManager {
   /** Opens a new, empty conversation. An empty one that is already open is reused. */
   create(): string {
     for (const entry of this.entries.values()) {
-      if (entry.orchestrator?.isEmpty && entry.title === DEFAULT_TITLE) {
+      if (entry.kind === 'chat' && entry.orchestrator?.isEmpty && entry.title === DEFAULT_TITLE) {
         // It may have been opened before another model or effort was chosen elsewhere.
         for (const agent of AGENT_IDS) {
           entry.orchestrator.setModel(agent, this.models[agent])
@@ -101,10 +115,19 @@ export class ChatManager {
         return entry.id
       }
     }
+    return this.add('chat', null)
+  }
+
+  /** Opens a new coding conversation in a project folder (an absolute path to a directory). */
+  createCode(workdir: string): string {
+    return this.add('code', workdir)
+  }
+
+  private add(kind: ConversationKind, workdir: string | null): string {
     let id = this.newId()
     while (this.entries.has(id)) id = this.newId()
     const at = this.now().toISOString()
-    const entry: Entry = { id, title: DEFAULT_TITLE, createdAt: at, updatedAt: at, orchestrator: null, saveTimer: null }
+    const entry: Entry = { id, kind, workdir, title: DEFAULT_TITLE, createdAt: at, updatedAt: at, orchestrator: null, saveTimer: null }
     entry.orchestrator = this.createOrchestrator(entry)
     this.entries.set(id, entry)
     this.publishList()
@@ -182,6 +205,18 @@ export class ChatManager {
     this.orchestrator(id).setDialogue(on)
   }
 
+  setReview(id: string, implementer: AgentId | null, task?: string): void {
+    this.orchestrator(id).setReview(implementer, task)
+  }
+
+  approve(id: string, approvalId: string, decision: ApprovalDecision): void {
+    this.entries.get(id)?.orchestrator?.approve(approvalId, decision)
+  }
+
+  setApprovalMode(id: string, mode: ApprovalMode): void {
+    this.orchestrator(id).setApprovalMode(mode)
+  }
+
   stopAll(): void {
     for (const entry of this.entries.values()) entry.orchestrator?.stop()
   }
@@ -231,6 +266,9 @@ export class ChatManager {
       cwd: this.options.cwd,
       models: { ...this.models },
       efforts: { ...this.efforts },
+      workdir: entry.workdir,
+      ...(this.options.gitBranch ? { gitBranch: this.options.gitBranch } : {}),
+      ...(this.options.gitDiff ? { gitDiff: this.options.gitDiff } : {}),
       now: this.now,
       ...(data ? { initial: data } : {}),
       emit: (envelope) => {
@@ -265,8 +303,8 @@ export class ChatManager {
       this.options.store.save({
         version: 1,
         id: entry.id,
-        kind: 'chat',
-        workdir: null,
+        kind: entry.kind,
+        workdir: entry.workdir,
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
         ...orchestrator.content(),

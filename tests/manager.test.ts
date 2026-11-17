@@ -210,4 +210,17 @@ describe('ChatManager', () => {
     await settle()
     expect(manager.snapshot(first).state.agents.claude).toMatchObject({ model: 'big', effort: 'high' }) // big takes high
   })
+  it('opens coding conversations in their folder, never reusing them as chats', async () => {
+    const { manager, claude, read } = setup()
+    const code = manager.createCode('/work/app')
+    expect(manager.list()[0]).toMatchObject({ id: code, kind: 'code' })
+    expect(manager.snapshot(code).state.workspace).toMatchObject({ path: '/work/app', name: 'app' })
+    expect(manager.create()).not.toBe(code)
+
+    manager.setApprovalMode(code, 'auto')
+    manager.send(code, { text: '直して', to: 'claude' })
+    claude.reply('直しました')
+    await settle()
+    expect(read(code)).toMatchObject({ kind: 'code', workdir: '/work/app', approvalMode: 'auto' })
+  })
 })

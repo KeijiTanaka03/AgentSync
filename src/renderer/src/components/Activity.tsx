@@ -6,6 +6,7 @@ export const ACTIVITY_LABELS: Record<ActivityKind, string> = {
   thinking: '考え中',
   searching: 'ウェブを検索中',
   working: '作業中',
+  waiting: 'あなたの承認待ち',
   writing: '入力中',
 }
 

@@ -1,13 +1,24 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from 'electron'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { AgentId, MenuCommand } from '../shared/types'
-import { parseAgentId, parseConversationId, parseEffort, parseModel, parseSendRequest, parseTitle } from '../shared/validate'
+import {
+  parseAgentId,
+  parseApproval,
+  parseApprovalMode,
+  parseConversationId,
+  parseEffort,
+  parseModel,
+  parseSendRequest,
+  parseTitle,
+} from '../shared/validate'
 import { ClaudeAdapter } from './agents/claude'
 import { CodexAdapter } from './agents/codex'
 import { StdioRpcConnection } from './agents/jsonRpc'
 import { ChatManager } from './chat/manager'
+import type { GitDiff } from './chat/orchestrator'
 import { childEnv, findExecutable, loadLoginShellPath } from './env'
 import { ConversationStore } from './store/conversationStore'
 import { SettingsStore, type CliName } from './store/settingsStore'
@@ -109,6 +120,92 @@ async function showCliLocations(): Promise<void> {
   }
 }
 
+/** The checked-out git branch of a folder; null when it is not a repository (or git is missing). */
+function gitBranch(dir: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3_000, env: childEnv() }, (error, stdout) => {
+      resolve(error ? null : stdout.trim() || null)
+    })
+  })
+}
+
+function git(dir: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd: dir, timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: childEnv() }, (error, stdout) => {
+      resolve(error ? null : stdout)
+    })
+  })
+}
+
+const MAX_DIFF = 60_000
+const MAX_NEW_FILE = 4_000
+
+/**
+ * The uncommitted changes of a project folder for the reviewer: `git diff HEAD`, plus the start of each new
+ * (untracked) file. Read only; the repository is not touched.
+ */
+async function gitDiff(dir: string): Promise<GitDiff | null> {
+  if ((await git(dir, ['rev-parse', '--is-inside-work-tree']))?.trim() !== 'true') return null
+  // A repository without commits yet has no HEAD to compare with.
+  const base = (await git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD'])) ? ['HEAD'] : []
+  const [diff, numstat, untracked] = await Promise.all([
+    git(dir, ['diff', '--no-color', ...base]),
+    git(dir, ['diff', '--numstat', ...base]),
+    git(dir, ['ls-files', '--others', '--exclude-standard']),
+  ])
+  let added = 0
+  let removed = 0
+  let files = 0
+  for (const line of (numstat ?? '').split('\n')) {
+    const [a, r] = line.split('\t')
+    if (!line.trim()) continue
+    files += 1
+    added += Number(a) || 0
+    removed += Number(r) || 0
+  }
+  const parts = [diff ?? '']
+  for (const file of (untracked ?? '').split('\n').filter(Boolean)) {
+    files += 1
+    let content = ''
+    try {
+      content = readFileSync(path.join(dir, file), 'utf8').slice(0, MAX_NEW_FILE)
+    } catch {
+      content = '（読めないファイルです）'
+    }
+    const lines = content.split('\n')
+    added += lines.length
+    parts.push(`新しいファイル: ${file}\n${lines.map((l) => `+${l}`).join('\n')}`)
+  }
+  let text = parts.filter((p) => p.trim() !== '').join('\n')
+  if (text.length > MAX_DIFF) text = `${text.slice(0, MAX_DIFF)}\n…（長いので、ここで切りました）`
+  return { text, files, added, removed }
+}
+
+/** Asks for the project folder of a new coding conversation. */
+async function chooseProjectFolder(window: BrowserWindow): Promise<string | null> {
+  // For automated checks: a folder given up front instead of the dialog.
+  const preset = process.env.AGENTSYNC_PROJECT_FOLDER
+  if (preset && path.isAbsolute(preset)) {
+    try {
+      return statSync(preset).isDirectory() ? preset : null
+    } catch {
+      return null
+    }
+  }
+  const picked = await dialog.showOpenDialog(window, {
+    title: 'プロジェクトのフォルダを選ぶ',
+    message: 'Claude と GPT が作業するフォルダを選んでください（git のリポジトリがおすすめです）',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  const folder = picked.filePaths[0]
+  if (picked.canceled || !folder) return null
+  try {
+    return statSync(folder).isDirectory() ? folder : null
+  } catch {
+    return null
+  }
+}
+
 /** Optional model overrides for development, e.g. AGENTSYNC_CLAUDE_MODEL=haiku. */
 function modelFromEnv(id: AgentId): string | null {
   const value = process.env[id === 'claude' ? 'AGENTSYNC_CLAUDE_MODEL' : 'AGENTSYNC_GPT_MODEL']
@@ -158,6 +255,8 @@ function createManager(): ChatManager {
     models: { claude: modelFromEnv('claude') ?? saved.models.claude, gpt: modelFromEnv('gpt') ?? saved.models.gpt },
     efforts: saved.efforts,
     onModelsChange: (models) => remember((next) => void (next.models = models)),
+    gitBranch,
+    gitDiff,
     onEffortsChange: (efforts) => remember((next) => void (next.efforts = efforts)),
     emitEvent: (envelope) => broadcast('chat:event', envelope),
     emitConversations: (conversations) => broadcast('conversations:changed', conversations),
@@ -260,6 +359,7 @@ function buildMenu(): Menu {
       label: 'ファイル',
       submenu: [
         { label: '新規会話', accelerator: 'CmdOrCtrl+N', click: () => sendMenuCommand('new-conversation') },
+        { label: '新規コーディング会話…', accelerator: 'Shift+CmdOrCtrl+N', click: () => sendMenuCommand('new-code-conversation') },
         { type: 'separator' },
         { label: '対話モードを切り替える', accelerator: 'Shift+CmdOrCtrl+D', click: () => sendMenuCommand('toggle-dialogue') },
         { label: '返事を止める', accelerator: 'CmdOrCtrl+.', click: () => sendMenuCommand('stop') },
@@ -316,6 +416,13 @@ async function confirmDelete(id: string, chat: ChatManager): Promise<boolean> {
 function registerIpc(): void {
   ipcMain.handle('conversations:list', (event) => fromMainWindow(event).list())
   ipcMain.handle('conversations:create', (event) => fromMainWindow(event).create())
+  ipcMain.handle('conversations:create-code', async (event) => {
+    const chat = fromMainWindow(event)
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window) return null
+    const folder = await chooseProjectFolder(window)
+    return folder ? chat.createCode(folder) : null
+  })
   ipcMain.handle('conversations:rename', (event, id: unknown, title: unknown) => {
     fromMainWindow(event).rename(parseConversationId(id), parseTitle(title))
   })
@@ -332,6 +439,19 @@ function registerIpc(): void {
   })
   ipcMain.handle('chat:stop', (event, id: unknown) => {
     fromMainWindow(event).stop(parseConversationId(id))
+  })
+  ipcMain.handle('chat:review', (event, id: unknown, implementer: unknown, task: unknown) => {
+    const agent = implementer === null ? null : parseAgentId(implementer)
+    // The request is checked like any message.
+    const text = task === undefined || task === '' ? undefined : parseSendRequest({ text: task, to: agent ?? 'all' }).text
+    fromMainWindow(event).setReview(parseConversationId(id), agent, text)
+  })
+  ipcMain.handle('chat:approve', (event, id: unknown, approvalId: unknown, decision: unknown) => {
+    const answer = parseApproval(approvalId, decision)
+    fromMainWindow(event).approve(parseConversationId(id), answer.id, answer.decision)
+  })
+  ipcMain.handle('chat:approval-mode', (event, id: unknown, mode: unknown) => {
+    fromMainWindow(event).setApprovalMode(parseConversationId(id), parseApprovalMode(mode))
   })
   ipcMain.handle('chat:dialogue', (event, id: unknown, on: unknown) => {
     if (typeof on !== 'boolean') throw new Error('対話モードの指定が不正です')

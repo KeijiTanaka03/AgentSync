@@ -19,9 +19,42 @@ export type Sender = 'user' | AgentId | 'system'
 export type Recipient = 'all' | 'user' | AgentId
 
 /** What a notice from AgentSync is about. */
-export type NoticeKind = 'dialogue-start' | 'dialogue-stop'
+export type NoticeKind = 'dialogue-start' | 'dialogue-stop' | 'review-start' | 'review-diff' | 'review-stop'
 
 export type MessageStatus = 'streaming' | 'done' | 'stopped' | 'error'
+
+/** A chat talks only. A coding conversation works in a project folder the user chose. */
+export type ConversationKind = 'chat' | 'code'
+
+/**
+ * How a coding conversation's agent may change the project.
+ * - `ask` (承認制): every edit and command waits for the user's approval; reading and searching do not.
+ * - `auto`: the CLI's own auto mode decides; only what it stops at is shown for approval.
+ */
+export type ApprovalMode = 'ask' | 'auto'
+
+/** One step an agent took while replying in a coding conversation (read a file, ran a command, …). */
+export interface ToolLogEntry {
+  id: string
+  kind: 'read' | 'search' | 'list' | 'edit' | 'command' | 'web' | 'other'
+  /** One line: a path, a command, a search pattern. */
+  title: string
+  status: 'running' | 'done' | 'failed'
+}
+
+/** Something an agent asked the user to allow. */
+export interface ApprovalEntry {
+  id: string
+  kind: 'command' | 'edit' | 'other'
+  /** What it wants to do, in a line. */
+  title: string
+  /** The command or the diff, when there is one. */
+  detail: string | null
+  status: 'pending' | 'allowed' | 'denied'
+}
+
+/** The user's answer to an approval card. `allow-all`: this one and the rest of this reply. */
+export type ApprovalDecision = 'allow' | 'allow-all' | 'deny'
 
 export interface ChatMessage {
   id: number
@@ -35,10 +68,18 @@ export interface ChatMessage {
   error?: string
   /** Set on notices (messages from `system`). */
   notice?: NoticeKind
+  /** `review-start` notices: who implements (the other agent reviews). */
+  implementer?: AgentId
+  /** `review-diff` notices: the changes handed to the reviewer (git diff). */
+  detail?: string
+  /** Coding conversations: the steps the agent took for this reply, in order. */
+  tools?: ToolLogEntry[]
+  /** Coding conversations: what the agent asked to be allowed during this reply. */
+  approvals?: ApprovalEntry[]
 }
 
 /** What an agent is doing while it replies. */
-export type ActivityKind = 'thinking' | 'searching' | 'working' | 'writing'
+export type ActivityKind = 'thinking' | 'searching' | 'working' | 'waiting' | 'writing'
 
 export interface AgentActivity {
   kind: ActivityKind
@@ -67,12 +108,37 @@ export interface DialogueState {
   turns: number
 }
 
+/** The project folder of a coding conversation. */
+export interface Workspace {
+  path: string
+  /** The folder's name, for showing. */
+  name: string
+  /** The checked-out git branch, when it is a repository. */
+  branch: string | null
+}
+
+/** 実装＋レビュー: one agent changes the project, the other reviews the diff, until APPROVED or the limit. */
+export interface ReviewState {
+  implementer: AgentId
+  reviewer: AgentId
+  /** The round running now, from 1. */
+  round: number
+  maxRounds: number
+  phase: 'implement' | 'review'
+}
+
 export interface ChatState {
   title: string
+  kind: ConversationKind
+  /** Coding conversations only. */
+  workspace: Workspace | null
+  approvalMode: ApprovalMode
   messages: ChatMessage[]
   agents: Record<AgentId, AgentInfo>
   /** Null when dialogue mode is off. */
   dialogue: DialogueState | null
+  /** Null when no 実装＋レビュー is running. */
+  review: ReviewState | null
 }
 
 export type ChatEvent =
@@ -84,6 +150,12 @@ export type ChatEvent =
   | { type: 'agent:activity'; id: AgentId; activity: AgentActivity | null }
   | { type: 'title:update'; title: string }
   | { type: 'dialogue:update'; dialogue: DialogueState | null }
+  | { type: 'review:update'; review: ReviewState | null }
+  /** A step of a reply was added or changed (matched by `tool.id`). */
+  | { type: 'message:tool'; id: number; tool: ToolLogEntry }
+  /** An approval card was added or answered (matched by `approval.id`). */
+  | { type: 'message:approval'; id: number; approval: ApprovalEntry }
+  | { type: 'workspace:update'; workspace: Workspace | null; approvalMode: ApprovalMode }
 
 /** Events carry a sequence number so the renderer can merge them with a snapshot. */
 export interface ChatEventEnvelope {
@@ -112,6 +184,9 @@ export interface ConversationSummary {
   busy: boolean
   /** Dialogue mode is on. */
   dialogue: boolean
+  /** 実装＋レビュー is running. */
+  review: boolean
+  kind: ConversationKind
 }
 
 export type SendTarget = 'all' | AgentId
@@ -144,13 +219,15 @@ export interface AgentChoices {
 }
 
 /** Commands sent from the app menu to the renderer. */
-export type MenuCommand = 'new-conversation' | 'toggle-dialogue' | 'stop'
+export type MenuCommand = 'new-conversation' | 'new-code-conversation' | 'toggle-dialogue' | 'stop'
 
 /** The API the preload script exposes to the renderer as `window.agentsync`. */
 export interface AgentSyncApi {
   listConversations(): Promise<ConversationSummary[]>
   /** Returns the ID of a new, empty conversation (an existing empty one is reused). */
   createConversation(): Promise<string>
+  /** Asks for a project folder, then returns the ID of a new coding conversation (null when cancelled). */
+  createCodeConversation(): Promise<string | null>
   renameConversation(id: string, title: string): Promise<void>
   /** Asks for confirmation first. Resolves to true when the conversation was deleted. */
   deleteConversation(id: string): Promise<boolean>
@@ -164,6 +241,14 @@ export interface AgentSyncApi {
   stop(conversationId: string): Promise<void>
   /** Turns dialogue mode on or off. */
   setDialogue(conversationId: string, on: boolean): Promise<void>
+  /**
+   * Starts 実装＋レビュー with this implementer (the other agent reviews), or stops it with null.
+   * `task`: the request, posted first without asking anyone to reply; otherwise the last request is used.
+   */
+  setReview(conversationId: string, implementer: AgentId | null, task?: string): Promise<void>
+  /** Answers an approval card. */
+  approve(conversationId: string, approvalId: string, decision: ApprovalDecision): Promise<void>
+  setApprovalMode(conversationId: string, mode: ApprovalMode): Promise<void>
   onEvent(listener: (envelope: ConversationEventEnvelope) => void): () => void
   onConversations(listener: (conversations: ConversationSummary[]) => void): () => void
   onMenuCommand(listener: (command: MenuCommand) => void): () => void

@@ -1,5 +1,11 @@
 import type { ChatEvent, ChatState } from './types'
 
+/** Replaces the entry with the same id, or adds it at the end. */
+function upsert<T extends { id: string }>(list: T[] | undefined, entry: T): T[] {
+  const items = list ?? []
+  return items.some((item) => item.id === entry.id) ? items.map((item) => (item.id === entry.id ? entry : item)) : [...items, entry]
+}
+
 /** Applies one event to a chat state. Pure, so the renderer and tests can share it. */
 export function applyEvent(state: ChatState, event: ChatEvent): ChatState {
   switch (event.type) {
@@ -24,5 +30,19 @@ export function applyEvent(state: ChatState, event: ChatEvent): ChatState {
       return { ...state, title: event.title }
     case 'dialogue:update':
       return { ...state, dialogue: event.dialogue }
+    case 'review:update':
+      return { ...state, review: event.review }
+    case 'message:tool':
+      return {
+        ...state,
+        messages: state.messages.map((m) => (m.id === event.id ? { ...m, tools: upsert(m.tools, event.tool) } : m)),
+      }
+    case 'message:approval':
+      return {
+        ...state,
+        messages: state.messages.map((m) => (m.id === event.id ? { ...m, approvals: upsert(m.approvals, event.approval) } : m)),
+      }
+    case 'workspace:update':
+      return { ...state, workspace: event.workspace, approvalMode: event.approvalMode }
   }
 }

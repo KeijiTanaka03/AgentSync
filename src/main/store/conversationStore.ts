@@ -4,11 +4,15 @@ import {
   AGENT_IDS,
   DEFAULT_TITLE,
   type AgentId,
+  type ApprovalEntry,
+  type ApprovalMode,
   type ChatMessage,
+  type ConversationKind,
   type MessageStatus,
   type NoticeKind,
   type Recipient,
   type Sender,
+  type ToolLogEntry,
 } from '../../shared/types'
 import { isConversationId, isEffort } from '../../shared/validate'
 
@@ -29,14 +33,17 @@ export interface ConversationContent {
   title: string
   messages: ChatMessage[]
   participants: Record<AgentId, StoredParticipant>
+  /** Coding conversations: how edits and commands are allowed. */
+  approvalMode: ApprovalMode
 }
 
 /** One conversation file: `conversations/<id>.json`. */
 export interface ConversationData extends ConversationContent {
   version: 1
   id: string
-  kind: 'chat'
-  workdir: null
+  kind: ConversationKind
+  /** The project folder of a coding conversation (absolute); null for a chat. */
+  workdir: string | null
   createdAt: string
   updatedAt: string
 }
@@ -45,15 +52,32 @@ const FORMAT_VERSION = 1
 const FILE_NAME = /^([a-z0-9][a-z0-9-]{0,63})\.json$/
 const SENDERS: readonly Sender[] = ['user', 'system', ...AGENT_IDS]
 const RECIPIENTS: readonly Recipient[] = ['all', 'user', ...AGENT_IDS]
-const NOTICES: readonly NoticeKind[] = ['dialogue-start', 'dialogue-stop']
+const NOTICES: readonly NoticeKind[] = ['dialogue-start', 'dialogue-stop', 'review-start', 'review-diff', 'review-stop']
 const STATUSES: readonly MessageStatus[] = ['streaming', 'done', 'stopped', 'error']
 
 const isString = (value: unknown): value is string => typeof value === 'string'
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
+const TOOL_KINDS: readonly ToolLogEntry['kind'][] = ['read', 'search', 'list', 'edit', 'command', 'web', 'other']
+const APPROVAL_KINDS: readonly ApprovalEntry['kind'][] = ['command', 'edit', 'other']
+
+function parseTool(raw: unknown): ToolLogEntry | null {
+  if (!isRecord(raw) || !isString(raw.id) || !isString(raw.title) || !TOOL_KINDS.includes(raw.kind as ToolLogEntry['kind'])) return null
+  // A step still running when the app closed did not finish.
+  const status = raw.status === 'done' ? 'done' : 'failed'
+  return { id: raw.id, kind: raw.kind as ToolLogEntry['kind'], title: raw.title, status }
+}
+
+function parseApproval(raw: unknown): ApprovalEntry | null {
+  if (!isRecord(raw) || !isString(raw.id) || !isString(raw.title) || !APPROVAL_KINDS.includes(raw.kind as ApprovalEntry['kind'])) return null
+  // A card still waiting when the app closed was never allowed.
+  const status = raw.status === 'allowed' ? 'allowed' : 'denied'
+  return { id: raw.id, kind: raw.kind as ApprovalEntry['kind'], title: raw.title, detail: isString(raw.detail) ? raw.detail : null, status }
+}
+
 function parseMessage(raw: unknown): ChatMessage | null {
   if (!isRecord(raw)) return null
-  const { id, from, to, text, at, status, error, notice } = raw
+  const { id, from, to, text, at, status, error, notice, tools, approvals, implementer, detail } = raw
   if (!Number.isSafeInteger(id) || (id as number) < 1) return null
   if (!SENDERS.includes(from as Sender) || !RECIPIENTS.includes(to as Recipient)) return null
   if (!isString(text) || !isString(at) || !STATUSES.includes(status as MessageStatus)) return null
@@ -67,9 +91,13 @@ function parseMessage(raw: unknown): ChatMessage | null {
     status: status === 'streaming' ? 'stopped' : (status as MessageStatus),
   }
   if (isString(error)) message.error = error
+  if (Array.isArray(tools)) message.tools = tools.map(parseTool).filter((t): t is ToolLogEntry => t !== null)
+  if (Array.isArray(approvals)) message.approvals = approvals.map(parseApproval).filter((a): a is ApprovalEntry => a !== null)
   if (from === 'system') {
     if (!NOTICES.includes(notice as NoticeKind)) return null
     message.notice = notice as NoticeKind
+    if (AGENT_IDS.includes(implementer as AgentId)) message.implementer = implementer as AgentId
+    if (isString(detail)) message.detail = detail
   }
   return message
 }
@@ -94,12 +122,14 @@ export function parseConversation(raw: unknown, id: string): ConversationData {
     : []
   const participants = isRecord(raw.participants) ? raw.participants : {}
   const fallbackTime = messages.at(-1)?.at ?? new Date(0).toISOString()
+  const code = raw.kind === 'code' && isString(raw.workdir) && path.isAbsolute(raw.workdir)
   return {
     version: FORMAT_VERSION,
     id,
     title: isString(raw.title) && raw.title.trim() ? raw.title : DEFAULT_TITLE,
-    kind: 'chat',
-    workdir: null,
+    kind: code ? 'code' : 'chat',
+    workdir: code ? (raw.workdir as string) : null,
+    approvalMode: raw.approvalMode === 'auto' ? 'auto' : 'ask',
     createdAt: isString(raw.createdAt) ? raw.createdAt : (messages[0]?.at ?? fallbackTime),
     updatedAt: isString(raw.updatedAt) ? raw.updatedAt : fallbackTime,
     participants: Object.fromEntries(AGENT_IDS.map((agent) => [agent, parseParticipant(participants[agent])])) as Record<

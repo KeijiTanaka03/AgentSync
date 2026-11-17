@@ -2,8 +2,10 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ClaudeAdapter, parseModelList } from '../src/main/agents/claude'
+import { ClaudeAdapter, describePermission, parseModelList, writesOutside } from '../src/main/agents/claude'
 import { ClaudeStreamParser } from '../src/main/agents/claudeStream'
+import type { AgentRunRequest, ApprovalRequest } from '../src/main/agents/types'
+import type { ToolLogEntry } from '../src/shared/types'
 
 // Shapes taken from real `claude -p --output-format stream-json --verbose --include-partial-messages` output.
 const line = (value: unknown) => JSON.stringify(value)
@@ -87,16 +89,16 @@ describe('ClaudeStreamParser', () => {
 
 describe('ClaudeAdapter.buildArgs', () => {
   it('disables tools and MCP servers and resumes the session when there is one', () => {
-    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: 'haiku', effort: 'low', sessionId: 'sess-1' })
+    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: 'haiku', effort: 'low', sessionId: 'sess-1', access: 'chat', approval: 'ask' })
     expect(args).toEqual([
       '-p',
       '--output-format',
       'stream-json',
       '--verbose',
       '--include-partial-messages',
+      '--strict-mcp-config',
       '--tools',
       '',
-      '--strict-mcp-config',
       '--system-prompt',
       'SYS',
       '--model',
@@ -109,7 +111,7 @@ describe('ClaudeAdapter.buildArgs', () => {
   })
 
   it('leaves out model, effort and resume when not set', () => {
-    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: null, effort: null, sessionId: null })
+    const args = ClaudeAdapter.buildArgs({ systemPrompt: 'SYS', model: null, effort: null, sessionId: null, access: 'chat', approval: 'ask' })
     expect(args).not.toContain('--model')
     expect(args).not.toContain('--effort')
     expect(args).not.toContain('--resume')
@@ -158,6 +160,95 @@ describe('Claude model list', () => {
     expect((await adapter.choices('claude-haiku-4-5-20251001')).efforts).toEqual([]) // no effort setting
     expect((await adapter.choices('my-custom-model')).efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     adapter.dispose()
+  })
+})
+
+describe('Claude in a coding conversation', () => {
+  const base = { systemPrompt: 'SYS', model: null, effort: null, sessionId: null }
+
+  it('works as Claude Code does, reading only or asking us before changes', () => {
+    const read = ClaudeAdapter.buildArgs({ ...base, access: 'read', approval: 'ask' })
+    expect(read).toEqual(expect.arrayContaining(['--append-system-prompt', 'SYS', '--tools', 'Read,Glob,Grep', '--permission-prompts', 'none']))
+    expect(read).not.toContain('--system-prompt')
+
+    const ask = ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'ask' })
+    expect(ask.join(' ')).toContain('--input-format stream-json --permission-mode manual --permission-prompts host --permission-prompt-tool stdio')
+    expect(ask).not.toContain('--tools')
+    expect(ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'auto' }).join(' ')).toContain('--permission-mode auto')
+  })
+
+  it('reports each tool call as a step, then finishes it with its result', () => {
+    const parser = new ClaudeStreamParser('/work/app')
+    const events = [
+      line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/work/app/src/a.ts' } }] } }),
+      line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'npm test\n# again' } }] } }),
+      line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: '...' }] } }),
+      line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', is_error: true, content: 'failed' }] } }),
+      line({ type: 'control_request', request_id: 'r1', request: { subtype: 'can_use_tool', tool_name: 'Bash' } }),
+    ].flatMap((l) => parser.push(l))
+    expect(events).toEqual([
+      { kind: 'tool', tool: { id: 't1', kind: 'read', title: 'src/a.ts', status: 'running' } },
+      { kind: 'tool', tool: { id: 't2', kind: 'command', title: 'npm test', status: 'running' } },
+      { kind: 'tool', tool: { id: 't1', kind: 'read', title: 'src/a.ts', status: 'done' } },
+      { kind: 'tool', tool: { id: 't2', kind: 'command', title: 'npm test', status: 'failed' } },
+      { kind: 'control', requestId: 'r1', request: { subtype: 'can_use_tool', tool_name: 'Bash' } },
+    ])
+  })
+
+  it('describes what a permission request would do', () => {
+    expect(describePermission('Bash', { command: 'rm -rf build' }, '/work/app')).toEqual({ kind: 'command', title: 'コマンドを実行: rm -rf build', detail: 'rm -rf build' })
+    const edit = describePermission('Edit', { file_path: '/work/app/a.ts', old_string: 'a', new_string: 'b' }, '/work/app')
+    expect(edit).toEqual({ kind: 'edit', title: 'ファイルを編集: a.ts', detail: '- a\n+ b' })
+    expect(writesOutside('Write', { file_path: '/work/app/x' }, '/work/app')).toBe(false)
+    expect(writesOutside('Write', { file_path: '/etc/hosts' }, '/work/app')).toBe(true)
+    expect(writesOutside('Edit', { file_path: '../other/x' }, '/work/app')).toBe(true)
+    expect(writesOutside('Bash', { command: 'ls' }, '/work/app')).toBe(false)
+  })
+
+  it('relays a permission request to the user and passes the answer back', async () => {
+    // A stand-in for `claude` with stream-json input: asks to run a command, then reports what it was told.
+    const folder = mkdtempSync(path.join(tmpdir(), 'agentsync-fake-claude-'))
+    const binary = path.join(folder, 'claude')
+    const ask = JSON.stringify({ type: 'control_request', request_id: 'r1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf build' } } })
+    writeFileSync(
+      binary,
+      [
+        '#!/bin/sh',
+        'read message',
+        `printf '%s\\n' '${ask}'`,
+        'read answer',
+        'case "$answer" in *\'"behavior":"allow"\'*) verdict=allowed ;; *) verdict=denied ;; esac',
+        'printf \'{"type":"result","subtype":"success","is_error":false,"result":"%s"}\\n\' "$verdict"',
+        'read rest',
+      ].join('\n') + '\n',
+    )
+    chmodSync(binary, 0o755)
+    const adapter = new ClaudeAdapter({ resolveBinary: async () => binary, env: () => process.env })
+    const asked: ApprovalRequest[] = []
+    const tools: ToolLogEntry[] = []
+    const request = (answer: 'allow' | 'deny'): AgentRunRequest => ({
+      prompt: 'build を消して',
+      systemPrompt: 'SYS',
+      sessionId: null,
+      cwd: folder,
+      model: null,
+      effort: null,
+      access: 'write',
+      approval: 'ask',
+      signal: new AbortController().signal,
+      onSession: () => {},
+      onModel: () => {},
+      onText: () => {},
+      onActivity: () => {},
+      onTool: (tool) => tools.push(tool),
+      requestApproval: async (req) => {
+        asked.push(req)
+        return answer
+      },
+    })
+    await expect(adapter.run(request('allow'))).resolves.toEqual({ text: 'allowed', status: 'done' })
+    expect(asked).toEqual([{ kind: 'command', title: 'コマンドを実行: rm -rf build', detail: 'rm -rf build' }])
+    await expect(adapter.run(request('deny'))).resolves.toEqual({ text: 'denied', status: 'done' })
   })
 })
 

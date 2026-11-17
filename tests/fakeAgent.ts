@@ -1,5 +1,6 @@
 import type { AgentAdapter, AgentRunRequest, AgentRunResult } from '../src/main/agents/types'
-import type { AgentActivity, AgentChoices, AgentId } from '../src/shared/types'
+import type { ApprovalRequest } from '../src/main/agents/types'
+import type { AgentActivity, AgentChoices, AgentId, ToolLogEntry } from '../src/shared/types'
 
 /** An agent whose replies the test controls. */
 export class FakeAgent implements AgentAdapter {
@@ -51,6 +52,16 @@ export class FakeAgent implements AgentAdapter {
   /** Reports what the oldest open turn is doing (thinking, searching, …). */
   activity(activity: AgentActivity): void {
     this.open[0]!.request.onActivity(activity)
+  }
+
+  /** Reports a step of the oldest open turn. */
+  tool(tool: ToolLogEntry): void {
+    this.open[0]!.request.onTool(tool)
+  }
+
+  /** Asks the user something during the oldest open turn. */
+  ask(request: ApprovalRequest): Promise<'allow' | 'deny'> {
+    return this.open[0]!.request.requestApproval(request)
   }
 
   fail(message: string): void {

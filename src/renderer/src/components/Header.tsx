@@ -1,16 +1,19 @@
 import { useEffect, useState } from 'react'
-import { AGENT_IDS, DISPLAY_NAMES, type AgentChoices, type AgentId, type AgentInfo } from '../../../shared/types'
+import { AGENT_IDS, DISPLAY_NAMES, type AgentChoices, type AgentId, type AgentInfo, type ApprovalMode, type Workspace } from '../../../shared/types'
 import { isModel } from '../../../shared/validate'
 import { errorMessage } from '../errors'
 import { ACTIVITY_LABELS } from './Activity'
 import { Avatar } from './Avatar'
-import { CheckIcon, ChevronDownIcon, PencilIcon } from './icons'
+import { BranchIcon, CheckIcon, ChevronDownIcon, FolderIcon, PencilIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
 
 interface HeaderProps {
   title: string
   agents: Record<AgentId, AgentInfo>
+  /** Coding conversations: the project folder, and how changes are allowed. */
+  workspace?: Workspace | null
+  approvalMode?: ApprovalMode
   onRename(title: string): void
   loadChoices(agent: AgentId): Promise<AgentChoices>
   onModel(agent: AgentId, model: string | null): void
@@ -30,7 +33,7 @@ const EFFORT_HINTS: Record<string, string> = {
 }
 
 /** The conversation title (click to rename) and the participants: model, effort and what each is doing. */
-export function Header({ title, agents, onRename, loadChoices, onModel, onEffort }: HeaderProps) {
+export function Header({ title, agents, workspace = null, approvalMode = 'ask', onRename, loadChoices, onModel, onEffort }: HeaderProps) {
   const [editing, setEditing] = useState(false)
   const [menu, setMenu] = useState<{ agent: AgentId; x: number; y: number; trigger: HTMLElement } | null>(null)
 
@@ -53,6 +56,23 @@ export function Header({ title, agents, onRename, loadChoices, onModel, onEffort
               <PencilIcon size={15} className="title-edit" />
             </button>
           </h1>
+        )}
+        {workspace && (
+          <span className="workspace-chip" title={workspace.path}>
+            <FolderIcon size={13} />
+            {workspace.name}
+            {workspace.branch && (
+              <>
+                <BranchIcon size={13} className="workspace-branch-icon" />
+                {workspace.branch}
+              </>
+            )}
+          </span>
+        )}
+        {workspace && approvalMode === 'auto' && (
+          <span className="auto-badge" title="編集とコマンドの実行を、確認せずに進めます">
+            auto
+          </span>
         )}
       </div>
       <div className="participants">

@@ -1,6 +1,7 @@
-import type { AgentActivity, AgentChoices } from '../../shared/types'
-import type { AgentAdapter, AgentRunRequest, AgentRunResult } from './types'
-import type { RpcConnection } from './jsonRpc'
+import path from 'node:path'
+import type { AgentActivity, AgentChoices, ToolLogEntry } from '../../shared/types'
+import type { Access, AgentAdapter, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
+import { RpcError, type RpcConnection } from './jsonRpc'
 
 // The subset of the `codex app-server` protocol this adapter uses.
 // Generated reference: `codex app-server generate-ts --out <dir>`.
@@ -69,6 +70,81 @@ export interface CodexAdapterOptions {
 /** A listener for notifications that belong to one thread. */
 type ThreadListener = (method: string, params: Json) => void
 
+/** Answers the approval requests of the turn running on a thread. */
+type ApprovalHandler = (method: string, params: Json) => Promise<unknown>
+
+const MAX_TITLE = 200
+const MAX_DETAIL = 4_000
+
+/** How a Codex thread may touch the project for an access level. */
+export function codexPolicy(access: Access, approval: 'ask' | 'auto') {
+  if (access !== 'write') {
+    return { sandbox: 'read-only', approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+  }
+  return {
+    sandbox: 'workspace-write',
+    // 「untrusted」 asks before every command that is not plainly safe and before every file change;
+    // 「on-request」 is Codex's auto mode, which asks only when it wants to go beyond the sandbox.
+    approvalPolicy: approval === 'auto' ? 'on-request' : 'untrusted',
+    sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+  }
+}
+
+/** `/bin/zsh -lc "ls -la"` → `ls -la`: the command as the model wrote it. */
+export function unwrapShell(command: string): string {
+  const match = /^\S*\/(?:ba|z)?sh -l?c (['"])([\s\S]*)\1$/.exec(command.trim())
+  return match ? match[2]!.replace(/\\(["\\])/g, '$1') : command
+}
+
+function oneLine(text: string): string {
+  const line = text.split('\n').find((l) => l.trim() !== '') ?? ''
+  return line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE)}…` : line
+}
+
+const clip = (text: string) => (text.length > MAX_DETAIL ? `${text.slice(0, MAX_DETAIL)}\n…` : text)
+
+function relativeTo(cwd: string, file: unknown): string {
+  const text = typeof file === 'string' ? file : ''
+  const relative = path.isAbsolute(text) ? path.relative(cwd, text) : text
+  return relative && !relative.startsWith('..') ? relative : text
+}
+
+/** How a Codex turn item is shown in the work log (null for messages and reasoning). */
+export function describeCodexItem(item: Json, cwd: string): Pick<ToolLogEntry, 'kind' | 'title'> | null {
+  switch (item.type) {
+    case 'commandExecution': {
+      const actions = Array.isArray(item.commandActions) ? (item.commandActions as Json[]) : []
+      const kinds = new Set(actions.map((a) => a.type))
+      const kind = kinds.size === 1 && kinds.has('read') ? 'read' : kinds.size === 1 && kinds.has('search') ? 'search' : kinds.size === 1 && kinds.has('listFiles') ? 'list' : 'command'
+      return { kind, title: oneLine(unwrapShell(String(item.command ?? ''))) }
+    }
+    case 'fileChange': {
+      const changes = Array.isArray(item.changes) ? (item.changes as Json[]) : []
+      return { kind: 'edit', title: changes.map((c) => relativeTo(cwd, c.path)).join(', ') }
+    }
+    case 'webSearch':
+      return { kind: 'web', title: oneLine(String(item.query ?? '')) || 'ウェブ検索' }
+    case 'mcpToolCall':
+    case 'dynamicToolCall':
+      return { kind: 'other', title: String(item.tool ?? item.server ?? item.type) }
+    default:
+      return null
+  }
+}
+
+function toolStatus(item: Json, finished: boolean): ToolLogEntry['status'] {
+  if (!finished) return 'running'
+  if (item.status === 'failed' || item.status === 'declined') return 'failed'
+  if (typeof item.exitCode === 'number' && item.exitCode !== 0) return 'failed'
+  return 'done'
+}
+
+/** Commands that only read, list or search (as Codex parses them) are allowed without asking. */
+function onlyReads(params: Json): boolean {
+  const actions = Array.isArray(params.commandActions) ? (params.commandActions as Json[]) : []
+  return actions.length > 0 && actions.every((a) => a.type === 'read' || a.type === 'listFiles' || a.type === 'search')
+}
+
 /** Items in which Codex does something other than think or write (run a command, call a tool, …). */
 const WORKING_ITEMS = new Set([
   'commandExecution',
@@ -119,6 +195,7 @@ export class CodexAdapter implements AgentAdapter {
   private connection: Promise<RpcConnection> | null = null
   private readonly loadedThreads = new Set<string>()
   private readonly threadListeners = new Map<string, ThreadListener>()
+  private readonly approvalHandlers = new Map<string, ApprovalHandler>()
   /**
    * The model and effort each loaded thread runs at, as last set in this process. Codex keeps a model or
    * effort given with a turn for the later turns too. A thread resumed from an earlier run is not listed: unknown.
@@ -134,11 +211,12 @@ export class CodexAdapter implements AgentAdapter {
     const rpc = await this.connect()
     if (request.signal.aborted) return { text: '', status: 'stopped' }
 
-    // Chat mode: Codex may read nothing outside an empty folder and never asks for approval.
+    // Chat: read-only in an empty folder, never asking. Coding: the project folder, as the access allows.
+    const policy = codexPolicy(request.access, request.approval)
     const threadSettings = {
       cwd: request.cwd,
-      sandbox: 'read-only',
-      approvalPolicy: 'never',
+      sandbox: policy.sandbox,
+      approvalPolicy: policy.approvalPolicy,
       developerInstructions: request.systemPrompt,
       ...(request.model ? { model: request.model } : {}),
     }
@@ -200,6 +278,13 @@ export class CodexAdapter implements AgentAdapter {
       if (typeof params !== 'object' || params === null) return
       const threadId = (params as Json).threadId
       if (typeof threadId === 'string') this.threadListeners.get(threadId)?.(method, params as Json)
+    }
+    // Approval requests go to the turn running on their thread; with none running, the answer is no.
+    rpc.onServerRequest = async (method, params) => {
+      const threadId = typeof params === 'object' && params !== null ? (params as Json).threadId : null
+      const handler = typeof threadId === 'string' ? this.approvalHandlers.get(threadId) : undefined
+      if (!handler) throw new RpcError(-32601, `AgentSync はこの要求に対応していません: ${method}`)
+      return handler(method, params as Json)
     }
     rpc.onClose = (error) => {
       this.connection = null
@@ -290,8 +375,34 @@ export class CodexAdapter implements AgentAdapter {
       }
       const finish = () => {
         this.threadListeners.delete(threadId)
+        this.approvalHandlers.delete(threadId)
         request.signal.removeEventListener('abort', interrupt)
       }
+
+      // File changes arrive as items first; their approval request only names the item.
+      const fileChanges = new Map<string, Json>()
+      const report = (item: Json, finished: boolean) => {
+        if (request.access === 'chat' || typeof item.id !== 'string') return
+        const described = describeCodexItem(item, request.cwd)
+        if (described) request.onTool({ id: item.id, ...described, status: toolStatus(item, finished) })
+      }
+      this.approvalHandlers.set(threadId, async (method, params) => {
+        let ask: ApprovalRequest | null = null
+        if (method === 'item/commandExecution/requestApproval') {
+          if (onlyReads(params)) return { decision: 'accept' }
+          const command = unwrapShell(String(params.command ?? ''))
+          ask = { kind: 'command', title: `コマンドを実行: ${oneLine(command)}`, detail: clip(command) }
+        } else if (method === 'item/fileChange/requestApproval') {
+          const item = fileChanges.get(String(params.itemId)) ?? {}
+          const changes = Array.isArray(item.changes) ? (item.changes as Json[]) : []
+          const files = changes.map((c) => relativeTo(request.cwd, c.path)).join(', ')
+          const diff = changes.map((c) => `--- ${relativeTo(request.cwd, c.path)}\n${String(c.diff ?? '')}`).join('\n')
+          ask = { kind: 'edit', title: `ファイルを変更: ${files || '（不明）'}`, detail: diff ? clip(diff) : null }
+        }
+        if (!ask) throw new RpcError(-32601, `AgentSync はこの要求に対応していません: ${method}`)
+        const decision = await request.requestApproval(ask)
+        return { decision: decision === 'allow' ? 'accept' : 'decline' }
+      })
 
       this.threadListeners.set(threadId, (method, params) => {
         const paramTurnId = typeof params.turnId === 'string' ? params.turnId : null
@@ -312,10 +423,13 @@ export class CodexAdapter implements AgentAdapter {
             const item = params.item as Json | undefined
             const activity = item ? itemActivity(item) : null
             if (activity) request.onActivity(activity)
+            if (item?.type === 'fileChange' && typeof item.id === 'string') fileChanges.set(item.id, item)
+            if (item) report(item, false)
             return
           }
           case 'item/completed': {
             const item = params.item as Json | undefined
+            if (item) report(item, true)
             if (item?.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string') {
               items.set(item.id, item.text)
             } else if (item) {
@@ -353,6 +467,10 @@ export class CodexAdapter implements AgentAdapter {
         .request<TurnStartResponse>('turn/start', {
           threadId,
           input: [{ type: 'text', text: request.prompt, text_elements: [] }],
+          // A coding thread changes between reading and writing from turn to turn.
+          ...(request.access === 'chat'
+            ? {}
+            : { approvalPolicy: codexPolicy(request.access, request.approval).approvalPolicy, sandboxPolicy: codexPolicy(request.access, request.approval).sandboxPolicy }),
           ...(overrides.model ? { model: overrides.model } : {}),
           ...(overrides.effort ? { effort: overrides.effort } : {}),
         })

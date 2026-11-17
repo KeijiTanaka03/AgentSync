@@ -11,6 +11,7 @@ function conversation(id: string, updatedAt: string, overrides: Partial<Conversa
     title: `会話 ${id}`,
     kind: 'chat',
     workdir: null,
+    approvalMode: 'ask',
     createdAt: '2026-11-16T05:00:00.000Z',
     updatedAt,
     participants: {
@@ -113,6 +114,7 @@ describe('parseConversation', () => {
         version: 1,
         messages: [
           { id: 1, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at, status: 'done', notice: 'dialogue-start' },
+          { id: 6, from: 'system', to: 'all', text: '変更を渡しました', at, status: 'done', notice: 'review-diff', implementer: 'gpt', detail: '+x' },
           { id: 2, from: 'system', to: 'all', text: '?', at, status: 'done' },
           { id: 3, from: 'system', to: 'all', text: '?', at, status: 'done', notice: 'launch' },
           { id: 4, from: 'claude', to: 'gpt', text: '反論します', at, status: 'done' },
@@ -123,8 +125,43 @@ describe('parseConversation', () => {
     )
     expect(parsed.messages.map((m) => [m.id, m.from, m.notice])).toEqual([
       [1, 'system', 'dialogue-start'],
+      [6, 'system', 'review-diff'],
       [4, 'claude', undefined],
     ])
+    expect(parsed.messages[1]).toMatchObject({ implementer: 'gpt', detail: '+x' })
+  })
+
+  it('keeps a coding conversation: its folder, approval mode, work logs and approvals', () => {
+    const at = '2026-11-17T05:00:00.000Z'
+    const parsed = parseConversation(
+      {
+        version: 1,
+        kind: 'code',
+        workdir: '/work/app',
+        approvalMode: 'auto',
+        messages: [
+          {
+            id: 1,
+            from: 'claude',
+            to: 'user',
+            text: '直しました',
+            at,
+            status: 'done',
+            tools: [
+              { id: 't1', kind: 'command', title: 'npm test', status: 'running' },
+              { id: 't2', kind: 'nope', title: '?', status: 'done' },
+            ],
+            approvals: [{ id: '1-1', kind: 'command', title: 'コマンドを実行: npm test', detail: 'npm test', status: 'pending' }],
+          },
+        ],
+      },
+      'a1',
+    )
+    expect(parsed).toMatchObject({ kind: 'code', workdir: '/work/app', approvalMode: 'auto' })
+    expect(parsed.messages[0]!.tools).toEqual([{ id: 't1', kind: 'command', title: 'npm test', status: 'failed' }])
+    expect(parsed.messages[0]!.approvals![0]!.status).toBe('denied')
+    // A folder that is not an absolute path makes it a plain chat.
+    expect(parseConversation({ version: 1, kind: 'code', workdir: 'relative/app' }, 'a2')).toMatchObject({ kind: 'chat', workdir: null, approvalMode: 'ask' })
   })
 
   it('keeps a chosen effort and drops one that is not a plain name', () => {

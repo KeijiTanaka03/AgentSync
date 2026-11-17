@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { AGENT_IDS, DISPLAY_NAMES, otherAgent, type AgentId, type AgentInfo, type ChatState, type DialogueState } from '../../../shared/types'
+import {
+  AGENT_IDS,
+  DISPLAY_NAMES,
+  otherAgent,
+  type AgentId,
+  type AgentInfo,
+  type ApprovalMode,
+  type ChatState,
+  type DialogueState,
+  type ReviewState,
+} from '../../../shared/types'
 import { errorMessage } from '../errors'
 import { useChat } from '../useChat'
 import { Composer } from './Composer'
 import { Header } from './Header'
-import { LoopIcon } from './icons'
+import { CodeIcon, LoopIcon } from './icons'
 import { Timeline } from './Timeline'
 
 /** One open conversation. Mounted again (with a fresh state) for each conversation. */
@@ -13,13 +23,26 @@ export function ChatView({ conversationId }: { conversationId: string }) {
   const loadChoices = useCallback((agent: AgentId) => window.agentsync.agentChoices(conversationId, agent), [conversationId])
 
   const toggleDialogue = (current: ChatState) => {
-    if (current.dialogue === null && !canStartDialogue(current)) return
+    if (current.dialogue === null && (!canStartDialogue(current) || current.review !== null)) return
     void window.agentsync.setDialogue(conversationId, current.dialogue === null).catch((error: unknown) => console.error(errorMessage(error)))
   }
 
   // Menu shortcuts (⇧⌘D, ⌘.) act on the conversation that is open.
   const latest = useRef({ state, toggleDialogue, stop })
   latest.current = { state, toggleDialogue, stop }
+  // Esc stops the replies, as in Claude Code — unless it is closing something else or ending an IME conversion.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+      const current = latest.current.state
+      if (!current) return
+      const running = current.dialogue !== null || current.review !== null || AGENT_IDS.some((id) => current.agents[id].busy)
+      if (running) void latest.current.stop()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   useEffect(
     () =>
       window.agentsync.onMenuCommand((command) => {
@@ -50,6 +73,8 @@ export function ChatView({ conversationId }: { conversationId: string }) {
       <Header
         title={state.title}
         agents={state.agents}
+        workspace={state.workspace}
+        approvalMode={state.approvalMode}
         onRename={(title) => {
           void window.agentsync.renameConversation(conversationId, title).catch((error: unknown) => console.error(errorMessage(error)))
         }}
@@ -61,14 +86,36 @@ export function ChatView({ conversationId }: { conversationId: string }) {
           void window.agentsync.setEffort(conversationId, agent, effort).catch((error: unknown) => console.error(errorMessage(error)))
         }}
       />
-      <Timeline messages={state.messages} agents={state.agents} />
+      <Timeline
+        messages={state.messages}
+        agents={state.agents}
+        kind={state.kind}
+        onApprove={(approvalId, decision) => {
+          void window.agentsync.approve(conversationId, approvalId, decision).catch((error: unknown) => console.error(errorMessage(error)))
+        }}
+      />
       <div className="composer-wrap">
         {state.dialogue && <DialogueBar dialogue={state.dialogue} agents={state.agents} />}
+        {state.review && <ReviewBar review={state.review} />}
         <Composer
           busy={busy}
           dialogue={state.dialogue !== null}
           canStartDialogue={canStartDialogue(state)}
           onToggleDialogue={() => toggleDialogue(state)}
+          {...(state.kind === 'code'
+            ? {
+                reviewing: state.review !== null,
+                canStartReview: state.messages.some((m) => m.from === 'user'),
+                onReview: (implementer: AgentId | null, task?: string) => {
+                  void window.agentsync.setReview(conversationId, implementer, task).catch((error: unknown) => console.error(errorMessage(error)))
+                },
+                approvalMode: state.approvalMode,
+                onApprovalMode: (mode: ApprovalMode) => {
+                  void window.agentsync.setApprovalMode(conversationId, mode).catch((error: unknown) => console.error(errorMessage(error)))
+                },
+              }
+            : {})}
+          history={state.messages.filter((m) => m.from === 'user').map((m) => m.text)}
           onSend={(text, to) => {
             void send({ text, to }).catch((error: unknown) => console.error(errorMessage(error)))
           }}
@@ -98,3 +145,20 @@ function DialogueBar({ dialogue, agents }: { dialogue: DialogueState; agents: Re
     </div>
   )
 }
+
+/** 「実装＋レビュー中 · 1/3 往復 · いま: Claude が実装」 above the input. */
+function ReviewBar({ review }: { review: ReviewState }) {
+  const now = review.phase === 'implement' ? `${DISPLAY_NAMES[review.implementer]} が実装` : `${DISPLAY_NAMES[review.reviewer]} がレビュー`
+  return (
+    <div className="dialogue-bar" role="status">
+      <CodeIcon size={15} className="dialogue-bar-icon" />
+      <b>実装＋レビュー中</b>
+      <span>
+        {review.round}/{review.maxRounds} 往復 · APPROVED か上限で止まります
+      </span>
+      <span className="dialogue-next">いま: {now}</span>
+      <span className="dialogue-hint">もう一度「実装＋レビュー」を押すと止まります</span>
+    </div>
+  )
+}
+
