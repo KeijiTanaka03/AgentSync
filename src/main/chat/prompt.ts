@@ -1,4 +1,4 @@
-import { otherAgent, type AgentId, type ChatMessage, type Recipient, type Sender } from '../../shared/types'
+import { otherAgent, type AgentId, type ApprovalMode, type ChatMessage, type Recipient, type Sender } from '../../shared/types'
 
 /** Names used inside prompts (the UI calls the user 「あなた」, the agents see 「ユーザー」). */
 const PROMPT_NAMES: Record<Sender, string> = {
@@ -100,18 +100,18 @@ export function replyTarget(unseen: readonly ChatMessage[], self: AgentId): Reci
 }
 
 /** For a coding conversation: what the agent may do on this turn, said at the start of its prompt. */
-export function turnNote(access: 'read' | 'write', approval: 'ask' | 'auto', folder: string): string {
+export function turnNote(access: 'read' | 'write', approval: ApprovalMode, folder: string): string {
   const note =
     access === 'write'
       ? `このターンでは、作業フォルダ（${folder}）のファイルの変更とコマンドの実行ができます。${
-          approval === 'auto' ? '承認なしで進められます（auto）。' : '変更とコマンドの実行の前には、ユーザーの承認を求めます（承認制）。'
+          approval === 'auto' ? 'ファイル変更・コマンド実行・外部操作は確認なしで許可されています（auto）。' : '変更とコマンドの実行の前には、ユーザーの承認を求めます（承認制）。'
         }`
       : 'このターンは読み取り専用です。ファイルを読んだり検索したりするコマンド（cat・sed -n・rg・ls など）は使えます。ファイルを変更する操作と、変更を伴うコマンドはしないでください。'
   return `【AgentSync からのお知らせ】\n${note}`
 }
 
 /** For a coding conversation: the group chat explained on top of the CLI's own coding instructions. */
-export function codeSystemPrompt(self: AgentId, workdir: string): string {
+export function codeSystemPrompt(self: AgentId, workdir: string, always = false): string {
   const other = self === 'claude' ? 'GPT' : 'Claude'
   return [
     `あなたは「${PROMPT_NAMES[self]}」として、グループチャットに参加しています。参加者は、ユーザー（人間）、Claude、GPT の 3 人です。`,
@@ -121,8 +121,8 @@ export function codeSystemPrompt(self: AgentId, workdir: string): string {
     '- 宛先が「あなた」か「全員」の発言に応えてください。それ以外の発言は、会話の流れとして読んでおいてください。',
     `- ${other} は、同じチャットにいる別の AI です。${other} の発言や変更には、賛成・反対・補足など、自分の考えで応じて構いません。`,
     '- 各ターンの最初に「【AgentSync からのお知らせ】」で、そのターンにできること（読み取り専用か、ファイルの変更とコマンドの実行ができるか）が届きます。従ってください。お知らせそのものには、返事の中で触れなくて構いません（承認はアプリが取ります）。',
-    '- ファイルを変更するのは作業フォルダの中だけにしてください。',
-    '- ウェブ検索や、つないである連携（Notion など）も使えます。何かを変える操作は、アプリがユーザーの承認を取ります。',
+    always ? '- autoが選択されています。依頼に必要なファイル変更・コマンド実行は、作業フォルダ外も含めて追加確認なしで進めてください。' : '- ファイルを変更するのは作業フォルダの中だけにしてください。',
+    always ? '- ウェブ検索や連携も使えます。依頼に必要な外部操作も、追加確認なしで許可されています。' : '- ウェブ検索や、つないである連携（Notion など）も使えます。何かを変える操作は、アプリがユーザーの承認を取ります。',
     '- あなたの返答は、そのままあなたの吹き出しとしてチャットに表示されます。見出しや自分の名前を先頭に付けないでください。',
     '- ユーザーと同じ言語で答えてください。作業をしたときは、何を変えたかを短くまとめてください。Markdown を使えます。',
   ].join('\n')

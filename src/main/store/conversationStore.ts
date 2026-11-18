@@ -143,7 +143,7 @@ export function parseConversation(raw: unknown, id: string): ConversationData {
     title: isString(raw.title) && raw.title.trim() ? raw.title : DEFAULT_TITLE,
     kind: code ? 'code' : 'chat',
     workdir: code ? (raw.workdir as string) : null,
-    approvalMode: raw.approvalMode === 'auto' ? 'auto' : 'ask',
+    approvalMode: raw.approvalMode === 'always' || raw.approvalMode === 'auto' ? 'auto' : 'ask',
     roles: AGENT_IDS.includes(raw.roles as AgentId) ? (raw.roles as Roles) : 'single',
     pinned: raw.pinned === true,
     createdAt: isString(raw.createdAt) ? raw.createdAt : (messages[0]?.at ?? fallbackTime),

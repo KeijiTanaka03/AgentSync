@@ -1,4 +1,4 @@
-# Builds AgentSync.app for this Mac: `npm run dist` → release/mac-<arch>/AgentSync.app
+# `npm run dist` packages macOS. `npm run dist:win` builds the Windows installer.
 appId: local.agentsync.app
 productName: AgentSync
 directories:
@@ -9,8 +9,6 @@ files:
   - out/**/*
   - '!out/main/selftest-*.js' # development only
   - package.json
-# Reuse the Electron installed by npm; packaging does not download another copy.
-electronDist: node_modules/electron/dist
 asar: true
 mac:
   target:
@@ -21,6 +19,14 @@ mac:
   # (the hardened runtime only matters for notarized apps).
   identity: '-'
   hardenedRuntime: false
+win:
+  target: nsis
+  icon: build/icon.png
+  signExecutable: false
+nsis:
+  artifactName: '${productName}-Setup-${version}.${ext}'
+  perMachine: false
+  packElevateHelper: false
 # Turn off Electron features the app does not use, so the packaged app cannot be repurposed
 # (e.g. run as plain Node.js, or have code injected through NODE_OPTIONS / --inspect).
 electronFuses:

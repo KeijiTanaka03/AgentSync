@@ -10,7 +10,7 @@ import { ClaudeAdapter } from '../../src/main/agents/claude'
 import { CodexAdapter } from '../../src/main/agents/codex'
 import { StdioRpcConnection } from '../../src/main/agents/jsonRpc'
 import { ChatManager } from '../../src/main/chat/manager'
-import { childEnv, findExecutable, loadLoginShellPath } from '../../src/main/env'
+import { childEnv, findExecutable, loadExecutablePath } from '../../src/main/env'
 import { ConversationStore } from '../../src/main/store/conversationStore'
 
 const enabled = process.env.AGENTSYNC_E2E === '1'
@@ -66,7 +66,7 @@ describe.skipIf(!enabled)('real CLIs', () => {
   it(
     'answers in parallel, shares what the other agent said, and continues after a restart',
     async () => {
-      await loadLoginShellPath()
+      await loadExecutablePath()
       const data = mkdtempSync(path.join(tmpdir(), 'agentsync-e2e-'))
 
       // --- First run ---
@@ -109,7 +109,7 @@ describe.skipIf(!enabled)('real CLIs', () => {
   it(
     'runs dialogue mode: the agents answer each other in turn until it is turned off',
     async () => {
-      await loadLoginShellPath()
+      await loadExecutablePath()
       const app = startApp(mkdtempSync(path.join(tmpdir(), 'agentsync-e2e-')))
       const id = app.create()
       try {

@@ -150,7 +150,7 @@ export class Orchestrator {
   constructor(private readonly options: OrchestratorOptions) {
     const initial = options.initial
     this.now = options.now ?? (() => new Date())
-    this.title = initial?.title ?? DEFAULT_TITLE
+    this.title = initial?.title ?? (options.workdir ? path.basename(options.workdir) || options.workdir : DEFAULT_TITLE)
     this.approvalMode = initial?.approvalMode ?? 'ask'
     this.roles = initial?.roles ?? 'single'
     this.workspace = options.workdir
@@ -346,7 +346,7 @@ export class Orchestrator {
     const firstFromUser = !this.messages.some((m) => m.from === 'user')
     this.addMessage({ from: 'user', to, text, status: 'done' })
     // Name a new conversation after its first message, as Claude.ai does.
-    if (firstFromUser && this.title === DEFAULT_TITLE) {
+    if (firstFromUser && !this.workspace && this.title === DEFAULT_TITLE) {
       const title = titleFromMessage(text)
       if (title) this.setTitle(title)
     }
@@ -360,6 +360,7 @@ export class Orchestrator {
       const agent = this.agents[id]
       agent.rerun = false
       agent.controller?.abort()
+      if (agent.sessionId) agent.adapter.closeSession?.(agent.sessionId)
     }
   }
 
@@ -557,6 +558,7 @@ export class Orchestrator {
     const access = this.accessFor(id, unseen, kind)
     if (access === 'write') this.writer = id
     const workspace = this.workspace
+    const always = access === 'write' && this.approvalMode === 'auto'
     const turn: TurnApprovals = { allowAll: false }
     // Models think before they write, so a reply starts as 「考え中」.
     this.updateAgent(id, { busy: true, activity: { kind: 'thinking' } })
@@ -585,7 +587,7 @@ export class Orchestrator {
     try {
       const result = await agent.adapter.run({
         prompt,
-        systemPrompt: workspace ? codeSystemPrompt(id, workspace.path) : chatSystemPrompt(id),
+        systemPrompt: workspace ? codeSystemPrompt(id, workspace.path, always) : chatSystemPrompt(id),
         sessionId: agent.sessionId,
         cwd: workspace?.path ?? this.options.cwd,
         model: agent.info.model,
@@ -597,7 +599,7 @@ export class Orchestrator {
           reply.tools = upsert(reply.tools, tool)
           this.emit({ type: 'message:tool', id: reply.id, tool })
         },
-        requestApproval: (ask) => this.askApproval(id, reply, ask, turn, controller.signal),
+        requestApproval: (ask) => always && !controller.signal.aborted ? Promise.resolve('allow') : this.askApproval(id, reply, ask, turn, controller.signal),
         signal: controller.signal,
         onSession: (sessionId) => {
           agent.sessionId = sessionId

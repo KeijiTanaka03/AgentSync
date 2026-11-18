@@ -3,21 +3,22 @@
   "productName": "AgentSync",
   "version": "0.1.0",
   "private": true,
-  "description": "Claude と GPT が同居する、LINE 風のグループチャット（個人用の Mac アプリ）",
+  "description": "Claude と GPT が同居する、LINE 風のデスクトップアプリ",
   "main": "./out/main/index.js",
   "engines": {
     "node": ">=22.12.0"
   },
   "scripts": {
-    "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev",
+    "dev": "node scripts/run.mjs node_modules/electron-vite/bin/electron-vite.js dev",
     "build": "electron-vite build",
-    "dist": "electron-vite build && electron-builder",
+    "dist": "electron-vite build && electron-builder --mac -c.electronDist=node_modules/electron/dist",
+    "dist:win": "electron-vite build && electron-builder --win --x64 --arm64 --publish never",
     "install:app": "npm run dist && sh scripts/install-app.sh",
-    "preview": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
+    "preview": "node scripts/run.mjs node_modules/electron-vite/bin/electron-vite.js preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "test:e2e": "AGENTSYNC_E2E=1 vitest run tests/e2e",
-    "icon": "env -u ELECTRON_RUN_AS_NODE electron scripts/render-icon.mjs"
+    "test:e2e": "node scripts/run.mjs --real-cli node_modules/vitest/vitest.mjs run tests/e2e",
+    "icon": "node scripts/run.mjs node_modules/electron/cli.js scripts/render-icon.mjs"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

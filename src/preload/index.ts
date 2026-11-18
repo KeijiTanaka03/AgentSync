@@ -26,6 +26,7 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
 
 // The only bridge between the page and the main process. Keep it small.
 const api: AgentSyncApi = {
+  platform: process.platform,
   listConversations: () => ipcRenderer.invoke('conversations:list') as Promise<ConversationSummary[]>,
   createConversation: () => ipcRenderer.invoke('conversations:create') as Promise<string>,
   createCodeConversation: () => ipcRenderer.invoke('conversations:create-code') as Promise<string | null>,
@@ -45,6 +46,7 @@ const api: AgentSyncApi = {
     ipcRenderer.invoke('chat:approve', id, approvalId, decision) as Promise<void>,
   setApprovalMode: (id: string, mode: ApprovalMode) => ipcRenderer.invoke('chat:approval-mode', id, mode) as Promise<void>,
   setRoles: (id: string, roles: Roles) => ipcRenderer.invoke('chat:roles', id, roles) as Promise<void>,
+  revealLocalLink: (href) => ipcRenderer.invoke('links:reveal-local', href),
   usage: () => ipcRenderer.invoke('usage:read') as Promise<Record<AgentId, UsageReport>>,
   listConnections: () => ipcRenderer.invoke('connections:list') as Promise<Record<CliId, ConnectionList>>,
   addConnection: (cli: CliId, name: string, url: string) => ipcRenderer.invoke('connections:add', cli, name, url) as Promise<void>,

@@ -3,6 +3,7 @@ import { ActivityLine } from './Activity'
 import { Avatar } from './Avatar'
 import { CopyButton } from './CopyButton'
 import { MarkdownText } from './MarkdownText'
+import { UrlText } from './UrlText'
 import { ApprovalCard, DiffText, WorkLog } from './WorkLog'
 
 function formatTime(iso: string): string {
@@ -57,7 +58,7 @@ export function MessageItem({ message, activity, interrupt = false, onApprove }:
         {interrupt && <span className="interrupt-label">割り込み · 次の話者に渡されます</span>}
         <div className="bubble bubble-user">
           <span className={`to-tag to-tag-${message.to}`}>{USER_TAGS[message.to]}</span>
-          <span className="user-text">{message.text}</span>
+          <span className="user-text"><UrlText text={message.text} /></span>
         </div>
         <span className="time">{time}</span>
       </div>

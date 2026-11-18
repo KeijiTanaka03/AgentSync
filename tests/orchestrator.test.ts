@@ -493,6 +493,31 @@ describe('Orchestrator in a coding conversation', () => {
     expect([claude.calls[1]!.access, gpt.calls[1]!.access]).toEqual(['read', 'read'])
   })
 
+  it('always-allow persists across replies without creating approval cards', async () => {
+    const { claude, orchestrator, messages } = coding()
+    orchestrator.setApprovalMode('auto')
+    for (const text of ['ビルドして', 'もう一度実行して']) {
+      orchestrator.send({ text, to: 'claude' })
+      await flush()
+      expect(claude.calls.at(-1)!.approval).toBe('auto')
+      await expect(claude.ask({ kind: 'command', title: '実行', detail: 'npm run build' })).resolves.toBe('allow')
+      await expect(claude.ask({ kind: 'other', title: '連携を変更', detail: null })).resolves.toBe('allow')
+      expect(messages().at(-1)!.approvals).toBeUndefined()
+      claude.reply('完了')
+      await flush()
+    }
+    expect(orchestrator.content().approvalMode).toBe('auto')
+    orchestrator.setApprovalMode('ask')
+    orchestrator.send({ text: '次は確認して', to: 'claude' })
+    await flush()
+    const answer = claude.ask({ kind: 'command', title: '確認', detail: null })
+    expect(messages().at(-1)!.approvals?.[0].status).toBe('pending')
+    orchestrator.approve(messages().at(-1)!.approvals![0].id, 'deny')
+    await expect(answer).resolves.toBe('deny')
+    claude.reply('了解')
+    await flush()
+  })
+
   it('shows approval cards and passes the answers to the agent; 「今回は全部許可」 covers the rest of the reply', async () => {
     const { claude, orchestrator, messages } = coding()
     orchestrator.send({ text: 'ビルドして', to: 'claude' })
@@ -678,7 +703,7 @@ describe('Orchestrator 実装＋レビュー', () => {
       ['system', 'all', 'review-start'],
       ['gpt', 'claude', ''],
     ])
-    expect(orchestrator.snapshot().state.title).toBe('入力チェックを足して')
+    expect(orchestrator.snapshot().state.title).toBe('app')
     expect(claude.calls).toHaveLength(0)
     expect(gpt.calls[0]!.access).toBe('write')
   })

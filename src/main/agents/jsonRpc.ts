@@ -52,7 +52,7 @@ export class StdioRpcConnection implements RpcConnection {
   private stderr = ''
 
   constructor(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) {
-    this.child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    this.child = spawn(command, args, { ...options, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     this.child.stdin.on('error', () => {
       // Reported through the close handler.
     })

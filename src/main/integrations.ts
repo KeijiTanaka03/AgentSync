@@ -7,7 +7,7 @@ const TIMEOUT = 60_000
 
 function run(binary: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; input?: string }): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile(binary, args, { cwd: options.cwd, env: options.env, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(binary, args, { cwd: options.cwd, env: options.env, windowsHide: true, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) reject(new Error((stderr || error.message).trim().slice(0, 500)))
       else resolve(stdout)
     })
@@ -132,7 +132,7 @@ export async function removeConnection(binary: string, env: NodeJS.ProcessEnv, c
 
 /** Codex signs in to a connector in the browser and waits for it; this does not wait. */
 export function startCodexLogin(binary: string, env: NodeJS.ProcessEnv, cwd: string, name: string, onDone: (ok: boolean) => void): void {
-  const child = spawn(binary, ['mcp', 'login', name], { cwd, env, stdio: 'ignore' })
+  const child = spawn(binary, ['mcp', 'login', name], { cwd, env, windowsHide: true, stdio: 'ignore' })
   const timer = setTimeout(() => child.kill('SIGTERM'), 10 * 60_000)
   child.on('close', (code) => {
     clearTimeout(timer)

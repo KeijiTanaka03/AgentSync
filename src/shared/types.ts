@@ -270,6 +270,7 @@ export type MenuCommand = 'new-conversation' | 'new-code-conversation' | 'toggle
 
 /** The API the preload script exposes to the renderer as `window.agentsync`. */
 export interface AgentSyncApi {
+  readonly platform: string
   listConversations(): Promise<ConversationSummary[]>
   /** Returns the ID of a new, empty conversation (an existing empty one is reused). */
   createConversation(): Promise<string>
@@ -301,6 +302,7 @@ export interface AgentSyncApi {
   /** Coding: chooses the roles. Nothing starts until a request is sent. */
   setRoles(conversationId: string, roles: Roles): Promise<void>
   /** Each plan's usage limits, read from the CLIs without using any. */
+  revealLocalLink(href: string): Promise<void>
   usage(): Promise<Record<AgentId, UsageReport>>
   listConnections(): Promise<Record<CliId, ConnectionList>>
   /** Adds a connector reached over HTTP (`url`). */

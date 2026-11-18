@@ -143,6 +143,7 @@ export class ChatManager {
       saveTimer: null,
     }
     entry.orchestrator = this.createOrchestrator(entry)
+    entry.title = entry.orchestrator.snapshot().state.title
     this.entries.set(id, entry)
     this.publishList()
     return id

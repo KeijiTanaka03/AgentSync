@@ -8,6 +8,7 @@ export type CliName = 'claude' | 'codex'
 
 /** App-wide choices. */
 export interface Settings {
+  window?: { x: number; y: number; width: number; height: number; maximized: boolean }
   /** The last model chosen for each agent; new conversations start with it (null: the CLI's own setting). */
   models: Record<AgentId, string | null>
   /** The last reasoning effort chosen for each agent, likewise. */
@@ -39,6 +40,16 @@ export function parseSettings(raw: unknown): Settings {
   for (const name of ['claude', 'codex'] as const) {
     const value = isRecord(cliPaths) ? cliPaths[name] : null
     if (typeof value === 'string' && path.isAbsolute(value)) settings.cliPaths[name] = value
+  }
+  const window = raw.window
+  if (isRecord(window)) {
+    const { x, y, width, height, maximized } = window
+    if (typeof x === 'number' && Number.isSafeInteger(x) && typeof y === 'number' && Number.isSafeInteger(y)
+      && typeof width === 'number' && Number.isSafeInteger(width) && width > 0
+      && typeof height === 'number' && Number.isSafeInteger(height) && height > 0
+      && typeof maximized === 'boolean') {
+      settings.window = { x, y, width, height, maximized }
+    }
   }
   return settings
 }

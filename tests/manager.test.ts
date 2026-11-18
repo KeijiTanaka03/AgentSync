@@ -230,7 +230,8 @@ describe('ChatManager', () => {
   it('opens coding conversations in their folder, never reusing them as chats', async () => {
     const { manager, claude, read } = setup()
     const code = manager.createCode('/work/app')
-    expect(manager.list()[0]).toMatchObject({ id: code, kind: 'code' })
+    expect(manager.list()[0]).toMatchObject({ id: code, kind: 'code', title: 'app' })
+    expect(manager.snapshot(code).state.title).toBe('app')
     expect(manager.snapshot(code).state.workspace).toMatchObject({ path: '/work/app', name: 'app' })
     expect(manager.create()).not.toBe(code)
 
@@ -238,6 +239,21 @@ describe('ChatManager', () => {
     manager.send(code, { text: '直して', to: 'claude' })
     claude.reply('直しました')
     await settle()
-    expect(read(code)).toMatchObject({ kind: 'code', workdir: '/work/app', approvalMode: 'auto' })
+    expect(read(code)).toMatchObject({ kind: 'code', workdir: '/work/app', approvalMode: 'auto', title: 'app' })
   })
+  it('allows coding titles to be renamed and preserves them after reopening', async () => {
+    const { manager, directory, claude, read } = setup()
+    const code = manager.createCode('/work/新しい会話/')
+    manager.send(code, { text: 'フォルダ名を保持して', to: 'claude' })
+    claude.reply('了解')
+    await settle()
+    expect(manager.snapshot(code).state.title).toBe('新しい会話')
+    manager.rename(code, '好きなタイトル')
+    await settle()
+    expect(manager.list().find((item) => item.id === code)?.title).toBe('好きなタイトル')
+    expect(read(code).title).toBe('好きなタイトル')
+    const reopened = setup(directory)
+    expect(reopened.manager.snapshot(code).state.title).toBe('好きなタイトル')
+  })
+
 })

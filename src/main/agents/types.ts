@@ -55,5 +55,7 @@ export interface AgentAdapter {
   run(request: AgentRunRequest): Promise<AgentRunResult>
   /** What can be chosen for this agent with the given model (null: the CLI's default model). */
   choices(model: string | null): Promise<AgentChoices>
+  /** Closes a live process, if this adapter keeps one per session. The transcript remains available. */
+  closeSession?(sessionId: string): void
   dispose(): void
 }

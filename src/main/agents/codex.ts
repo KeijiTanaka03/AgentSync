@@ -1,6 +1,5 @@
 import path from 'node:path'
-import { appUpdateEnabled, APP_UPDATE_TARGET } from './appUpdate'
-import type { AgentActivity, AgentChoices, ToolLogEntry } from '../../shared/types'
+import type { AgentActivity, AgentChoices, ApprovalMode, ToolLogEntry } from '../../shared/types'
 import type { Access, AgentAdapter, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
 import { RpcError, type RpcConnection } from './jsonRpc'
 
@@ -44,8 +43,8 @@ interface CodexConfig {
 }
 
 /** Every connector asks before each tool call, so AgentSync can decide (see the approval handler). */
-export function connectorOverrides(servers: readonly string[]): Record<string, string> {
-  return Object.fromEntries(servers.filter((name) => /^[\w-]+$/.test(name)).map((name) => [`mcp_servers.${name}.default_tools_approval_mode`, 'prompt']))
+export function connectorOverrides(servers: readonly string[], always = false): Record<string, string> {
+  return Object.fromEntries(servers.filter((name) => /^[\w-]+$/.test(name)).map((name) => [`mcp_servers.${name}.default_tools_approval_mode`, always ? 'approve' : 'prompt']))
 }
 
 /** The model and effort a thread runs at. Null: the CLI's own setting. */
@@ -85,17 +84,18 @@ const MAX_TITLE = 200
 const MAX_DETAIL = 4_000
 
 /** How a Codex thread may touch the project for an access level. */
-export function codexPolicy(access: Access, approval: 'ask' | 'auto', allowAppUpdate = false) {
+export function codexPolicy(access: Access, approval: ApprovalMode) {
   if (access !== 'write') {
     // 「on-request」, not 「never」: with 「never」 Codex refuses connector calls set to ask first by itself.
-    return { sandbox: 'read-only', approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+    return { sandbox: 'read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
   }
+  if (approval === 'auto') return { sandbox: 'danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' } }
   return {
     sandbox: 'workspace-write',
     // 「untrusted」 asks before every command that is not plainly safe and before every file change;
-    // 「on-request」 is Codex's auto mode, which asks only when it wants to go beyond the sandbox.
-    approvalPolicy: approval === 'auto' ? 'on-request' : 'untrusted',
-    sandboxPolicy: { type: 'workspaceWrite', writableRoots: approval === 'auto' && allowAppUpdate && process.platform === 'darwin' ? [APP_UPDATE_TARGET] : [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+    approvalPolicy: 'untrusted',
+    approvalsReviewer: 'user',
+    sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
   }
 }
 
@@ -205,6 +205,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly id = 'gpt' as const
   private connection: Promise<RpcConnection> | null = null
   private readonly loadedThreads = new Set<string>()
+  private readonly threadAlways = new Map<string, boolean>()
   private readonly threadListeners = new Map<string, ThreadListener>()
   private readonly approvalHandlers = new Map<string, ApprovalHandler>()
   /**
@@ -223,15 +224,17 @@ export class CodexAdapter implements AgentAdapter {
     if (request.signal.aborted) return { text: '', status: 'stopped' }
 
     // Chat: read-only in an empty folder, never asking. Coding: the project folder, as the access allows.
-    const policy = codexPolicy(request.access, request.approval, appUpdateEnabled(request.cwd))
+    const policy = codexPolicy(request.access, request.approval)
     const { mcpServers } = await this.readConfig(rpc)
+    const always = request.access === 'write' && request.approval === 'auto'
     const threadSettings = {
       cwd: request.cwd,
       sandbox: policy.sandbox,
       approvalPolicy: policy.approvalPolicy,
+      approvalsReviewer: policy.approvalsReviewer,
       developerInstructions: request.systemPrompt,
       ...(request.model ? { model: request.model } : {}),
-      ...(mcpServers.length > 0 ? { config: connectorOverrides(mcpServers) } : {}),
+      ...(mcpServers.length > 0 ? { config: connectorOverrides(mcpServers, always) } : {}),
     }
 
     let threadId = request.sessionId
@@ -242,12 +245,13 @@ export class CodexAdapter implements AgentAdapter {
       this.threadSettings.set(threadId, { model: request.model, effort: null })
       request.onSession(threadId)
       request.onModel(started.model)
-    } else if (!this.loadedThreads.has(threadId)) {
+    } else if (!this.loadedThreads.has(threadId) || this.threadAlways.get(threadId) !== always) {
       const resumed = await rpc.request<ThreadResponse>('thread/resume', { threadId, ...threadSettings, excludeTurns: true })
       this.loadedThreads.add(threadId)
       request.onModel(resumed.model)
     }
 
+    this.threadAlways.set(threadId, always)
     const overrides = await this.turnOverrides(threadId, request)
     return this.runTurn(rpc, threadId, request, overrides)
   }
@@ -326,6 +330,7 @@ export class CodexAdapter implements AgentAdapter {
   /** What a new app-server process will not know: loaded threads and what was read from Codex. */
   private forgetProcess(): void {
     this.loadedThreads.clear()
+    this.threadAlways.clear()
     this.threadSettings.clear()
     this.models = null
     this.config = null
@@ -385,6 +390,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private runTurn(rpc: RpcConnection, threadId: string, request: AgentRunRequest, overrides: TurnOverrides): Promise<AgentRunResult> {
+    const policy = codexPolicy(request.access, request.approval)
     return new Promise<AgentRunResult>((resolve, reject) => {
       let turnId: string | null = null
       let lastItemId: string | null = null
@@ -507,7 +513,7 @@ export class CodexAdapter implements AgentAdapter {
           // A coding thread changes between reading and writing from turn to turn.
           ...(request.access === 'chat'
             ? {}
-            : { approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy }),
+            : { approvalPolicy: policy.approvalPolicy, approvalsReviewer: policy.approvalsReviewer, sandboxPolicy: policy.sandboxPolicy }),
           ...(overrides.model ? { model: overrides.model } : {}),
           ...(overrides.effort ? { effort: overrides.effort } : {}),
         })

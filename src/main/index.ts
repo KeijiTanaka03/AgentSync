@@ -1,8 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, shell, type MenuItemConstructorOptions } from 'electron'
 import { execFile } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { localLinkPath } from './localLinks'
+import { ReplyBadge } from './replyBadge'
 import type { AgentId, CliId, ConnectionList, MenuCommand, UsageReport } from '../shared/types'
 import {
   parseAgentId,
@@ -29,11 +31,15 @@ import {
   removeConnection,
   startCodexLogin,
 } from './integrations'
-import { childEnv, findExecutable, loadLoginShellPath } from './env'
+import { childEnv, findExecutable, loadExecutablePath } from './env'
 import { ConversationStore } from './store/conversationStore'
 import { SettingsStore, type CliName } from './store/settingsStore'
 
 app.setName('AgentSync')
+const onMac = process.platform === 'darwin'
+const onWindows = process.platform === 'win32'
+// Matches the application ID used by electron-builder for the Start menu shortcut.
+if (onWindows) app.setAppUserModelId('local.agentsync.app')
 
 // Keep development data apart from the installed app's data.
 // A self test gets a throwaway folder unless it is given one to reuse.
@@ -50,8 +56,31 @@ let mainWindow: BrowserWindow | null = null
 let manager: ChatManager | null = null
 let settings: SettingsStore | null = null
 let codexAdapter: CodexAdapter | null = null
+let claudeAdapter: ClaudeAdapter | null = null
 /** The empty folder chats run in (also where the CLIs are asked about usage and connectors). */
 let chatFolder: string | null = null
+
+function makeReplyDot(): Electron.NativeImage {
+  const size = 16
+  const pixels = Buffer.alloc(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const alpha = Math.max(0, Math.min(1, 7.5 - Math.hypot(x - 7.5, y - 7.5)))
+      const offset = (y * size + x) * 4
+      pixels[offset] = Math.round(55 * alpha)
+      pixels[offset + 1] = Math.round(52 * alpha)
+      pixels[offset + 2] = Math.round(217 * alpha)
+      pixels[offset + 3] = Math.round(255 * alpha)
+    }
+  }
+  return nativeImage.createFromBitmap(pixels, { width: size, height: size })
+}
+
+let replyDot: Electron.NativeImage | undefined
+const replyBadge = new ReplyBadge((label) => {
+  if (onMac) app.dock?.setBadge(label)
+  if (onWindows) mainWindow?.setOverlayIcon(label ? (replyDot ??= makeReplyDot()) : null, label ? `未確認の回答 ${label} 件` : '')
+})
 
 const CLI_LABELS: Record<CliName, string> = { claude: 'Claude Code CLI', codex: 'Codex CLI' }
 
@@ -76,10 +105,11 @@ async function requireExecutable(name: CliName): Promise<string> {
   const found = await findExecutable(name, chosen)
   if (found) return found
   const label = CLI_LABELS[name]
+  const executable = onWindows ? `${name}.exe` : name
   throw new Error(
     chosen
       ? `指定した場所（${chosen}）に ${label} が見つかりません。アプリのメニューの「AgentSync > CLI の場所…」で指定し直してください。`
-      : `${label}（${name}）が見つかりません。インストールしてログインしてから、アプリのメニューの「AgentSync > CLI の場所…」で場所を指定してください。`,
+      : `${label}（${executable}）が見つかりません。インストールしてログインしてから、アプリのメニューの「AgentSync > CLI の場所…」で場所を指定してください。`,
   )
 }
 
@@ -91,7 +121,7 @@ async function showCliLocations(): Promise<void> {
   const describe = async (name: CliName): Promise<string> => {
     const chosen = store.load().cliPaths[name]
     const found = await findExecutable(name, chosen ?? undefined)
-    if (chosen) return found ? `${chosen}（指定）` : `${chosen}（指定した場所にありません）`
+    if (chosen) return found ? `${found}（指定）` : `${chosen}（実行ファイルが見つかりません）`
     return found ? `${found}（自動で見つけました）` : '見つかりません'
   }
   for (;;) {
@@ -110,13 +140,15 @@ async function showCliLocations(): Promise<void> {
         next.cliPaths = { claude: null, codex: null }
       })
       codexAdapter?.dispose() // the next reply starts Codex again from wherever it is found
+      claudeAdapter?.reload()
       continue
     }
     const name: CliName = response === 1 ? 'claude' : 'codex'
     const picked = await dialog.showOpenDialog(window, {
       title: `${CLI_LABELS[name]} を選ぶ`,
-      message: `${name} の実行ファイルを選んでください（例: /opt/homebrew/bin/${name}）`,
-      defaultPath: '/opt/homebrew/bin',
+      message: onWindows ? `${name}.exe、またはnpmでインストールした ${name}.cmd を選んでください。` : `${name} の実行ファイルを選んでください（例: /opt/homebrew/bin/${name}）`,
+      defaultPath: (await findExecutable(name)) ?? (onWindows ? app.getPath('home') : '/opt/homebrew/bin'),
+      ...(onWindows ? { filters: [{ name: 'CLI', extensions: ['exe', 'cmd'] }] } : {}),
       properties: ['openFile', 'showHiddenFiles', 'treatPackageAsDirectory'],
     })
     const file = picked.filePaths[0]
@@ -129,21 +161,20 @@ async function showCliLocations(): Promise<void> {
       next.cliPaths[name] = file
     })
     if (name === 'codex') codexAdapter?.dispose()
+    else claudeAdapter?.reload()
   }
 }
 
 /** The checked-out git branch of a folder; null when it is not a repository (or git is missing). */
-function gitBranch(dir: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3_000, env: childEnv() }, (error, stdout) => {
-      resolve(error ? null : stdout.trim() || null)
-    })
-  })
+async function gitBranch(dir: string): Promise<string | null> {
+  return (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']))?.trim() || null
 }
 
-function git(dir: string, args: string[]): Promise<string | null> {
+async function git(dir: string, args: string[]): Promise<string | null> {
+  const binary = onWindows ? await findExecutable('git') : 'git'
+  if (!binary) return null
   return new Promise((resolve) => {
-    execFile('git', args, { cwd: dir, timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: childEnv() }, (error, stdout) => {
+    execFile(binary, args, { cwd: dir, timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: childEnv(), windowsHide: true }, (error, stdout) => {
       resolve(error ? null : stdout)
     })
   })
@@ -163,7 +194,7 @@ async function gitDiff(dir: string): Promise<GitDiff | null> {
   const [diff, numstat, untracked] = await Promise.all([
     git(dir, ['diff', '--no-color', ...base]),
     git(dir, ['diff', '--numstat', ...base]),
-    git(dir, ['ls-files', '--others', '--exclude-standard']),
+    git(dir, ['ls-files', '--others', '--exclude-standard', '-z']),
   ])
   let added = 0
   let removed = 0
@@ -176,7 +207,7 @@ async function gitDiff(dir: string): Promise<GitDiff | null> {
     removed += Number(r) || 0
   }
   const parts = [diff ?? '']
-  for (const file of (untracked ?? '').split('\n').filter(Boolean)) {
+  for (const file of (untracked ?? '').split('\0').filter(Boolean)) {
     files += 1
     let content = ''
     try {
@@ -308,6 +339,7 @@ function createManager(): ChatManager {
     env: () => childEnv(),
     listCwd: chatDirectory,
   })
+  claudeAdapter = claude
   const gpt = new CodexAdapter({
     clientVersion: app.getVersion(),
     connect: async () => {
@@ -327,21 +359,42 @@ function createManager(): ChatManager {
     gitBranch,
     gitDiff,
     onEffortsChange: (efforts) => remember((next) => void (next.efforts = efforts)),
-    emitEvent: (envelope) => broadcast('chat:event', envelope),
+    emitEvent: (envelope) => {
+      broadcast('chat:event', envelope)
+      const completed = replyBadge.receive(envelope, mainWindow?.isFocused() === true)
+      if (completed && Notification.isSupported()) {
+        const notification = new Notification({ title: 'AgentSync', body: '回答が完了しました。', silent: true })
+        notification.on('click', () => showWindow())
+        notification.show()
+      }
+    },
     emitConversations: (conversations) => broadcast('conversations:changed', conversations),
   })
 }
 
 function createWindow(): BrowserWindow {
+  const saved = settings?.load().window
+  const bounds = saved && (() => {
+    const { workArea } = screen.getDisplayMatching(saved)
+    const width = Math.min(workArea.width, Math.max(720, saved.width))
+    const height = Math.min(workArea.height, Math.max(520, saved.height))
+    return {
+      x: Math.max(workArea.x, Math.min(saved.x, workArea.x + workArea.width - width)),
+      y: Math.max(workArea.y, Math.min(saved.y, workArea.y + workArea.height - height)),
+      width,
+      height,
+    }
+  })()
   const window = new BrowserWindow({
     width: 1180,
     height: 820,
+    ...bounds,
     minWidth: 720,
     minHeight: 520,
     show: false,
     title: 'AgentSync',
     backgroundColor: '#FAF9F5',
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: onMac ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -351,7 +404,20 @@ function createWindow(): BrowserWindow {
     },
   })
 
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    if (!saved || saved.maximized) window.maximize()
+    window.show()
+  })
+  window.on('close', () => {
+    const bounds = window.getNormalBounds()
+    const maximized = window.isMaximized()
+    try {
+      settings?.update((next) => { next.window = { ...bounds, maximized } })
+    } catch (error) {
+      console.error('[settings] could not save window position:', error)
+    }
+  })
+  window.on('focus', () => replyBadge.clear())
   window.webContents.setWindowOpenHandler(({ url }) => {
     openExternally(url)
     return { action: 'deny' }
@@ -417,12 +483,14 @@ function buildMenu(): Menu {
         { label: '使用量…', click: () => sendMenuCommand('usage') },
         { label: 'CLI の場所…', click: () => void showCliLocations() },
         { type: 'separator' },
-        { role: 'services', label: 'サービス' },
-        { type: 'separator' },
-        { role: 'hide', label: `${name} を隠す` },
-        { role: 'hideOthers', label: 'ほかを隠す' },
-        { role: 'unhide', label: 'すべてを表示' },
-        { type: 'separator' },
+        ...(onMac ? [
+          { role: 'services', label: 'サービス' },
+          { type: 'separator' },
+          { role: 'hide', label: `${name} を隠す` },
+          { role: 'hideOthers', label: 'ほかを隠す' },
+          { role: 'unhide', label: 'すべてを表示' },
+          { type: 'separator' },
+        ] satisfies MenuItemConstructorOptions[] : []),
         { role: 'quit', label: `${name} を終了` },
       ],
     },
@@ -456,9 +524,18 @@ function buildMenu(): Menu {
       role: 'window',
       submenu: [
         { role: 'minimize', label: 'しまう' },
-        { role: 'zoom', label: '拡大／縮小' },
-        { type: 'separator' },
-        { role: 'front', label: 'すべてを手前に移動' },
+        ...(onMac ? [
+          { role: 'zoom', label: '拡大／縮小' },
+          { type: 'separator' },
+          { role: 'front', label: 'すべてを手前に移動' },
+        ] satisfies MenuItemConstructorOptions[] : [{
+          label: '最大化／元に戻す',
+          click: () => {
+            const window = showWindow()
+            if (window.isMaximized()) window.unmaximize()
+            else window.maximize()
+          },
+        }]),
       ],
     },
   ])
@@ -485,6 +562,19 @@ async function confirmDelete(id: string, chat: ChatManager): Promise<boolean> {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('links:reveal-local', (event, href: unknown) => {
+    fromMainWindow(event)
+    if (typeof href !== 'string') return
+    try {
+      const target = localLinkPath(href)
+      if (!target) return
+      const existing = (candidate: string) => statSync(candidate, { throwIfNoEntry: false })
+      const file = existing(target) ? target : target.replace(/:\d+(?::\d+)?$/, '')
+      if (existing(file)) shell.showItemInFolder(file)
+    } catch {
+      // Invalid or inaccessible local link.
+    }
+  })
   ipcMain.handle('conversations:list', (event) => fromMainWindow(event).list())
   ipcMain.handle('conversations:create', (event) => fromMainWindow(event).create())
   ipcMain.handle('conversations:create-code', async (event) => {
@@ -538,6 +628,7 @@ function registerIpc(): void {
     const which = parseCli(cli)
     await addConnection(which, await requireExecutable(which), childEnv(), chatFolder ?? app.getPath('userData'), parseConnectionName(name), parseConnectionUrl(url))
     if (which === 'codex') codexAdapter?.dispose() // the next reply starts Codex with the new connector
+    else claudeAdapter?.reload()
   })
   ipcMain.handle('connections:remove', async (event, cli: unknown, name: unknown) => {
     fromMainWindow(event)
@@ -556,6 +647,7 @@ function registerIpc(): void {
     if (response !== 0) return false
     await removeConnection(await requireExecutable(which), childEnv(), chatFolder ?? app.getPath('userData'), connection)
     if (which === 'codex') codexAdapter?.dispose()
+    else claudeAdapter?.reload()
     return true
   })
   ipcMain.handle('connections:login', async (event, cli: unknown, name: unknown) => {
@@ -604,7 +696,7 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed(permission)))
     session.defaultSession.setPermissionCheckHandler((_contents, permission) => allowed(permission))
 
-    await loadLoginShellPath()
+    await loadExecutablePath()
     manager = createManager()
     registerIpc()
     Menu.setApplicationMenu(buildMenu())
@@ -622,7 +714,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    if (!onMac) app.quit()
   })
 
   app.on('before-quit', () => {

@@ -87,30 +87,34 @@ export function Composer({
     submit()
   }
 
-  const show = (value: string) => {
+  const show = (value: string, atStart = false) => {
     setText(value)
     requestAnimationFrame(() => {
       resize()
       const element = box.current
-      if (element) element.selectionStart = element.selectionEnd = value.length
+      if (element) element.selectionStart = element.selectionEnd = atStart ? 0 : value.length
     })
   }
 
   /**
-   * ↑ on the first line: the message sent before (again for older ones). ↓ on the last line: newer ones,
-   * then back to your draft. Elsewhere the arrows move the caret as usual.
+   * ↑ first moves to the start of the draft; only at position zero does it recall history.
+   * ↓ on the last line recalls newer messages, then restores the saved draft.
    */
   const recall = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
     const element = event.currentTarget
     if (element.selectionStart !== element.selectionEnd) return false
-    const onFirstLine = !text.slice(0, element.selectionStart).includes('\n')
     const onLastLine = !text.slice(element.selectionEnd).includes('\n')
-    if (event.key === 'ArrowUp' && onFirstLine && history.length > 0) {
+    if (event.key === 'ArrowUp' && element.selectionStart > 0) {
+      element.setSelectionRange(0, 0)
+      element.scrollTop = 0
+      return true
+    }
+    if (event.key === 'ArrowUp' && element.selectionStart === 0 && history.length > 0) {
       if (recalled === 0) return true
       const index = recalled === null ? history.length - 1 : Math.max(0, recalled - 1)
       if (recalled === null) draft.current = text
       setRecalled(index)
-      show(history[index]!)
+      show(history[index]!, true)
       return true
     }
     if (event.key === 'ArrowDown' && recalled !== null && onLastLine) {
@@ -129,7 +133,7 @@ export function Composer({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return
-    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey) {
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
       if (recall(event)) event.preventDefault()
       return
     }
@@ -150,7 +154,11 @@ export function Composer({
               type="button"
               className={`chip chip-${target.id}`}
               aria-pressed={to === target.id}
-              onClick={() => setTo(target.id)}
+              onClick={() => {
+                setTo(target.id)
+                // Addressing one AI means a plain request, so a chosen 実装＋レビュー is cleared.
+                if (target.id !== 'all' && implementer && !reviewing) onRoles?.('single')
+              }}
             >
               {target.label}
             </button>
@@ -162,7 +170,7 @@ export function Composer({
               <button type="button" aria-pressed={approvalMode === 'ask'} title="ファイルの編集とコマンドの実行の前に、毎回確認します" onClick={() => onApprovalMode('ask')}>
                 承認制
               </button>
-              <button type="button" aria-pressed={approvalMode === 'auto'} title="確認せずに進めます（各 CLI の auto モード）。作業ブランチで使ってください" onClick={() => onApprovalMode('auto')}>
+              <button type="button" aria-pressed={approvalMode === 'auto'} title="作業フォルダ外の変更や外部操作も確認なしで進めます" onClick={() => onApprovalMode('auto')}>
                 auto
               </button>
             </div>

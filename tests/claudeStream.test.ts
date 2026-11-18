@@ -182,7 +182,7 @@ describe('Claude in a coding conversation', () => {
     const ask = ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'ask' })
     expect(ask.join(' ')).toContain('--input-format stream-json --permission-mode manual --permission-prompts host --permission-prompt-tool stdio')
     expect(ask).not.toContain('--tools')
-    expect(ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'auto' }).join(' ')).toContain('--permission-mode auto')
+    expect(ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'auto' }).join(' ')).toContain('--permission-mode bypassPermissions')
     // auto is for changing the project; elsewhere Claude Code asks us as usual.
     expect(ClaudeAdapter.buildArgs({ ...base, access: 'chat', approval: 'auto' }).join(' ')).toContain('--permission-mode manual')
   })

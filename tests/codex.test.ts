@@ -111,6 +111,7 @@ describe('CodexAdapter', () => {
       cwd: '/tmp/chat',
       sandbox: 'read-only',
       approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
       developerInstructions: 'SYS',
     })
     expect(server.requests[3]!.params.input).toEqual([{ type: 'text', text: '【ユーザー → あなた】\nこんにちは', text_elements: [] }])
@@ -294,6 +295,53 @@ describe('CodexAdapter', () => {
 })
 
 describe('Codex in a coding conversation', () => {
+  it('updates connector and sandbox permissions when switching out of always-allow', async () => {
+    const { server, adapter } = setup()
+    server.mcpServers = { notion: { url: 'https://mcp.notion.com/mcp' } }
+    const full = adapter.run(request({ cwd: '/work/app', access: 'write', approval: 'auto' }).req)
+    await flush()
+    await flush()
+    expect(server.requests.find((r) => r.method === 'thread/start')!.params).toMatchObject({ sandbox: 'danger-full-access', approvalPolicy: 'never', config: { 'mcp_servers.notion.default_tools_approval_mode': 'approve' } })
+    expect(server.requests.find((r) => r.method === 'turn/start')!.params.sandboxPolicy).toEqual({ type: 'dangerFullAccess' })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await full
+    const limited = adapter.run(request({ cwd: '/work/app', sessionId: 'thread-1', access: 'read', approval: 'auto' }).req)
+    await flush()
+    await flush()
+    expect(server.requests.find((r) => r.method === 'thread/resume')!.params).toMatchObject({ sandbox: 'read-only', config: { 'mcp_servers.notion.default_tools_approval_mode': 'prompt' } })
+    expect(server.requests.filter((r) => r.method === 'turn/start').at(-1)!.params.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false })
+    server.push('turn/completed', { turn: { id: 'turn-2', status: 'completed', error: null } })
+    await limited
+    adapter.dispose()
+  })
+
+  it('routes auto approvals to Codex review and restores user review for later read/ask turns', async () => {
+    const { server, adapter } = setup()
+    const auto = adapter.run(request({ cwd: '/work/app', access: 'write', approval: 'auto' }).req)
+    await flush()
+    await flush()
+    expect(server.requests.find((r) => r.method === 'thread/start')!.params).toMatchObject({
+      sandbox: 'danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user',
+    })
+    expect(server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({
+      approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' },
+    })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await auto
+    for (const access of ['read', 'write'] as const) {
+      const turn = adapter.run(request({ cwd: '/work/app', sessionId: 'thread-1', access, approval: 'ask' }).req)
+      await flush()
+      await flush()
+      expect(server.requests.filter((r) => r.method === 'turn/start').at(-1)!.params).toMatchObject({
+        approvalsReviewer: 'user', sandboxPolicy: { type: access === 'read' ? 'readOnly' : 'workspaceWrite' },
+      })
+      const turnNumber = server.requests.filter((r) => r.method === 'turn/start').length
+      server.push('turn/completed', { turn: { id: `turn-${turnNumber}`, status: 'completed', error: null } })
+      await turn
+    }
+    adapter.dispose()
+  })
+
   /** Starts a write turn in /work/app; returns what it reports and asks. */
   async function writeTurn(answer: 'allow' | 'deny' = 'allow') {
     const { server, adapter } = setup()

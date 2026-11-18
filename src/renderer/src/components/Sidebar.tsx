@@ -3,6 +3,7 @@ import type { ConversationKind, ConversationSummary } from '../../../shared/type
 import { BrandMark, ChatIcon, CodeIcon, FolderIcon, LinkIcon, LoopIcon, MeterIcon, MoreIcon, PencilIcon, PinIcon, PlusIcon, TrashIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
+import { UsageSummary } from './UsageSummary'
 
 interface SidebarProps {
   conversations: ConversationSummary[]
@@ -170,6 +171,7 @@ export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, 
           </section>
         ))}
       </div>
+      <UsageSummary onDetails={onUsage} />
       <div className="sidebar-footer">
         <button type="button" onClick={onConnections}>
           <LinkIcon size={15} />

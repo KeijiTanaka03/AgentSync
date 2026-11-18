@@ -22,5 +22,5 @@ npm-debug.log*
 !.vscode/extensions.json
 .idea/
 
-# Machine-local AgentSync permissions
+# Legacy machine-local AgentSync settings
 .agentsync.local.json
