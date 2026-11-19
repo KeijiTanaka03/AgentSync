@@ -1,10 +1,12 @@
 import { randomBytes } from 'node:crypto'
+import path from 'node:path'
 import {
   AGENT_IDS,
   DEFAULT_TITLE,
   type AgentChoices,
   type AgentId,
   type ApprovalDecision,
+  type QuestionAnswers,
   type ApprovalMode,
   type ConversationKind,
   type ChatSnapshot,
@@ -33,6 +35,7 @@ export interface ChatManagerOptions {
   onEffortsChange?(efforts: Record<AgentId, string | null>): void
   /** Likewise for models. */
   onModelsChange?(models: Record<AgentId, string | null>): void
+  attachmentThumbnail?(bytes: Buffer): string | undefined
   /** The checked-out git branch of a project folder (null when it is not a repository). */
   gitBranch?(dir: string): Promise<string | null>
   /** The uncommitted changes of a project folder, for 実装＋レビュー (null when it is not a repository). */
@@ -101,6 +104,7 @@ export class ChatManager {
         review: entry.orchestrator?.inReview ?? false,
         kind: entry.kind,
         pinned: entry.pinned,
+        ...(entry.workdir ? { workdir: entry.workdir, folderName: path.basename(entry.workdir) || entry.workdir } : {}),
       }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
@@ -143,6 +147,7 @@ export class ChatManager {
       saveTimer: null,
     }
     entry.orchestrator = this.createOrchestrator(entry)
+    entry.title = entry.orchestrator.snapshot().state.title
     this.entries.set(id, entry)
     this.publishList()
     return id
@@ -217,8 +222,21 @@ export class ChatManager {
     return this.orchestrator(id).snapshot()
   }
 
-  send(id: string, request: SendRequest): void {
-    this.orchestrator(id).send(request)
+  send(id: string, request: SendRequest, uploads?: unknown): void {
+    const orchestrator = this.orchestrator(id)
+    const files = this.options.store.attachments.save(id, uploads, this.options.attachmentThumbnail)
+    orchestrator.send(files.length ? { ...request, attachments: files } : request)
+  }
+
+  attachmentPath(id: string, attachmentId: string): string {
+    for (const message of this.snapshot(id).state.messages) {
+      const file = message.attachments?.find((item) => item.id === attachmentId)
+      if (!file) continue
+      const filename = this.options.store.attachments.existingFile(id, file)
+      if (filename) return filename
+      break
+    }
+    throw new Error('添付ファイルが見つかりません')
   }
 
   stop(id: string): void {
@@ -235,6 +253,10 @@ export class ChatManager {
 
   approve(id: string, approvalId: string, decision: ApprovalDecision): void {
     this.entries.get(id)?.orchestrator?.approve(approvalId, decision)
+  }
+
+  answer(id: string, approvalId: string, answers: QuestionAnswers | null): void {
+    this.entries.get(id)?.orchestrator?.answer(approvalId, answers)
   }
 
   setApprovalMode(id: string, mode: ApprovalMode): void {
@@ -295,6 +317,7 @@ export class ChatManager {
       models: { ...this.models },
       efforts: { ...this.efforts },
       workdir: entry.workdir,
+      attachmentPath: (file) => this.options.store.attachments.existingFile(entry.id, file),
       ...(this.options.gitBranch ? { gitBranch: this.options.gitBranch } : {}),
       ...(this.options.gitDiff ? { gitDiff: this.options.gitDiff } : {}),
       now: this.now,

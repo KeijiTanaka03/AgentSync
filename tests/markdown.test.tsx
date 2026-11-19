@@ -34,4 +34,9 @@ describe('MarkdownText', () => {
   it('opens links outside the app', () => {
     expect(html('[公式](https://example.com)')).toContain('target="_blank" rel="noreferrer"')
   })
+  it('preserves absolute file links embedded behind a label', () => {
+    expect(html('[設計書](</work/My Project/README.md:12>)')).toContain('href="/work/My%20Project/README.md:12"')
+    expect(html('[設計書](file:///work/README.md)')).toContain('href="file:///work/README.md"')
+  })
+
 })

@@ -4,20 +4,19 @@ import { ApprovalCard, WorkLog } from '../src/renderer/src/components/WorkLog'
 import type { ApprovalEntry } from '../src/shared/types'
 
 describe('WorkLog', () => {
-  it('lists the steps, open while the reply is coming in', () => {
+  it('lists the steps, initially collapsed even while a step is running', () => {
     const tools = [
       { id: 't1', kind: 'read', title: 'src/a.ts', status: 'done' },
       { id: 't2', kind: 'command', title: 'npm test', status: 'failed' },
       { id: 't3', kind: 'edit', title: 'src/b.ts', status: 'running' },
     ] as const
-    const live = renderToStaticMarkup(<WorkLog tools={[...tools]} live />)
-    expect(live).toContain('<details class="work-log" open="">')
+    const live = renderToStaticMarkup(<WorkLog tools={[...tools]} />)
+    expect(live).toContain('<details class="work-log">')
     expect(live).toContain('作業ログ（3 件・実行中 1・失敗 1）')
     expect(live).toContain('<code title="npm test">npm test</code>')
     // The running row keeps its own class; only the dot at its end is the small blinking mark.
     expect(live).toContain('<li class="work-step work-running">')
     expect(live).toContain('<span class="work-dot" aria-label="実行中"></span>')
-    expect(renderToStaticMarkup(<WorkLog tools={[...tools]} live={false} />)).toContain('<details class="work-log">')
   })
 })
 

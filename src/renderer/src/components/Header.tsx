@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AGENT_IDS, DISPLAY_NAMES, type AgentChoices, type AgentId, type AgentInfo, type ApprovalMode, type Workspace } from '../../../shared/types'
+import { AGENT_IDS, DISPLAY_NAMES, type AgentChoices, type AgentId, type AgentInfo, type Workspace } from '../../../shared/types'
 import { isModel } from '../../../shared/validate'
 import { errorMessage } from '../errors'
 import { ACTIVITY_LABELS } from './Activity'
@@ -11,9 +11,8 @@ import { TitleInput } from './TitleInput'
 interface HeaderProps {
   title: string
   agents: Record<AgentId, AgentInfo>
-  /** Coding conversations: the project folder, and how changes are allowed. */
+  /** Coding conversations: the project folder. */
   workspace?: Workspace | null
-  approvalMode?: ApprovalMode
   onRename(title: string): void
   loadChoices(agent: AgentId): Promise<AgentChoices>
   onModel(agent: AgentId, model: string | null): void
@@ -33,7 +32,7 @@ const EFFORT_HINTS: Record<string, string> = {
 }
 
 /** The conversation title (click to rename) and the participants: model, effort and what each is doing. */
-export function Header({ title, agents, workspace = null, approvalMode = 'ask', onRename, loadChoices, onModel, onEffort }: HeaderProps) {
+export function Header({ title, agents, workspace = null, onRename, loadChoices, onModel, onEffort }: HeaderProps) {
   const [editing, setEditing] = useState(false)
   const [menu, setMenu] = useState<{ agent: AgentId; x: number; y: number; trigger: HTMLElement } | null>(null)
 
@@ -67,11 +66,6 @@ export function Header({ title, agents, workspace = null, approvalMode = 'ask', 
                 {workspace.branch}
               </>
             )}
-          </span>
-        )}
-        {workspace && approvalMode === 'auto' && (
-          <span className="auto-badge" title="編集とコマンドの実行を、確認せずに進めます">
-            auto
           </span>
         )}
       </div>

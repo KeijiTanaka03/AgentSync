@@ -4,6 +4,7 @@ import {
   MAX_TITLE_LENGTH,
   type AgentId,
   type ApprovalDecision,
+  type QuestionAnswers,
   type ApprovalMode,
   type SendRequest,
   type SendTarget,
@@ -67,6 +68,21 @@ export function parseApproval(id: unknown, decision: unknown): { id: string; dec
   if (typeof id !== 'string' || !/^\d{1,9}-\d{1,9}$/.test(id)) throw new Error('承認の指定が不正です')
   if (decision !== 'allow' && decision !== 'allow-all' && decision !== 'deny') throw new Error('承認の指定が不正です')
   return { id, decision }
+}
+
+/** Answers to a question card: question id → chosen labels or typed text. Null skips it. */
+export function parseAnswers(id: unknown, raw: unknown): { id: string; answers: QuestionAnswers | null } {
+  if (typeof id !== 'string' || !/^\d{1,9}-\d{1,9}$/.test(id)) throw new Error('質問の指定が不正です')
+  if (raw === null) return { id, answers: null }
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('回答が不正です')
+  const answers: QuestionAnswers = {}
+  const entries = Object.entries(raw as Record<string, unknown>)
+  if (entries.length > 20) throw new Error('回答が不正です')
+  for (const [key, value] of entries) {
+    if (key.length > 200 || !Array.isArray(value) || value.length > 20 || !value.every((v) => typeof v === 'string' && v.length <= MAX_MESSAGE_LENGTH)) throw new Error('回答が不正です')
+    answers[key] = value as string[]
+  }
+  return { id, answers }
 }
 
 export function parseRoles(raw: unknown): Roles {

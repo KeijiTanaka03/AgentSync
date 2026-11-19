@@ -1,7 +1,8 @@
-import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AGENT_IDS, DISPLAY_NAMES, isAgentId, otherAgent, type ApprovalMode, type Roles, type SendTarget } from '../../../shared/types'
+import { useId, useImperativeHandle, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type Ref } from 'react'
+import { AGENT_IDS, DISPLAY_NAMES, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, isAgentId, otherAgent, type ApprovalMode, type AttachmentUpload, type Roles, type SendTarget } from '../../../shared/types'
 import { parseLeadingMention } from '../../../shared/validate'
-import { CheckIcon, CodeIcon, LoopIcon } from './icons'
+import { errorMessage } from '../errors'
+import { CheckIcon, CodeIcon, LoopIcon, PlusIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 
 const TARGETS: { id: SendTarget; label: string }[] = [
@@ -12,13 +13,20 @@ const TARGETS: { id: SendTarget; label: string }[] = [
 
 const MAX_HEIGHT = 220
 
+export interface ComposerHandle {
+  addDroppedFiles(files: File[]): void
+}
+
 interface ComposerProps {
+  ref?: Ref<ComposerHandle>
+  to: SendTarget
+  setTo(to: SendTarget): void
   busy: boolean
   /** Dialogue mode is on. */
   dialogue: boolean
   /** There is something to talk about (dialogue mode needs a topic). */
   canStartDialogue: boolean
-  onSend(text: string, to: SendTarget): void
+  onSend(text: string, to: SendTarget, files?: AttachmentUpload[]): Promise<void>
   onStop(): void
   onToggleDialogue(): void
   /** Coding conversations: how edits and commands are allowed. */
@@ -35,6 +43,9 @@ interface ComposerProps {
 }
 
 export function Composer({
+  ref,
+  to,
+  setTo,
   busy,
   dialogue,
   canStartDialogue,
@@ -51,13 +62,88 @@ export function Composer({
 }: ComposerProps) {
   const messageId = useId()
   const implementer = isAgentId(roles) ? roles : null
-  const [to, setTo] = useState<SendTarget>('all')
   // ↑ / ↓: which earlier message is shown (null: your own draft), and the draft kept meanwhile.
   const [recalled, setRecalled] = useState<number | null>(null)
   const draft = useRef('')
   const [reviewMenu, setReviewMenu] = useState<{ x: number; y: number; trigger: HTMLElement } | null>(null)
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
+  const picker = useRef<HTMLInputElement>(null)
+  // Each attachment is a token in the text (「[Image #1]」, 「[File #1: a.pdf]」), as pasting into Claude Code or
+  // Codex does; deleting the token from the text drops the file. Numbers keep two files of one name apart.
+  const [attachments, setAttachments] = useState<{ files: { file: File; token: string }[]; error: string | null }>({ files: [], error: null })
+  const imageCount = useRef(0)
+  const fileCount = useRef(0)
+  const [sending, setSending] = useState(false)
+  const [pasting, setPasting] = useState(false)
+  const busyWithFiles = useRef(false)
+
+  const addFiles = (files: File[]) => {
+    if (!files.length) return
+    const current = attachments.files.filter((entry) => text.includes(entry.token))
+    if (current.length + files.length > MAX_ATTACHMENTS) {
+      setAttachments((now) => ({ ...now, error: `添付は1回に${MAX_ATTACHMENTS}件までです` }))
+      return
+    }
+    if ([...current.map((entry) => entry.file), ...files].reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
+      setAttachments((now) => ({ ...now, error: '添付ファイルは合計50 MBまでです' }))
+      return
+    }
+    const added = files.map((file) => ({
+      file,
+      token: file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(file.name) ? `[Image #${++imageCount.current}]` : `[File #${++fileCount.current}: ${file.name}]`,
+    }))
+    setAttachments({ files: [...current, ...added], error: null })
+    // At the caret, as a paste would put it.
+    const element = box.current
+    const start = element ? element.selectionStart : text.length
+    const end = element ? element.selectionEnd : text.length
+    const before = text.slice(0, start)
+    const after = text.slice(end)
+    const inserted = `${before && !/\s$/.test(before) ? ' ' : ''}${added.map((entry) => entry.token).join(' ')}${after && !/^\s/.test(after) ? ' ' : ''}`
+    const value = before + inserted + after
+    setText(value)
+    setRecalled(null)
+    requestAnimationFrame(() => {
+      resize()
+      if (element) element.selectionStart = element.selectionEnd = before.length + inserted.length
+    })
+  }
+
+  /** The files whose tokens are still in the text. */
+  const attached = attachments.files.filter((entry) => text.includes(entry.token))
+
+  useImperativeHandle(ref, () => ({
+    addDroppedFiles(files) {
+      if (busyWithFiles.current) return
+      addFiles(files)
+      box.current?.focus()
+    },
+  }))
+
+  const pasteFiles = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files)
+    if (files.length) {
+      event.preventDefault()
+      if (!busyWithFiles.current) addFiles(files)
+      return
+    }
+    // Let Chromium handle ordinary text paste, including its undo history.
+    if (!event.nativeEvent.isTrusted) return
+    const urls = event.clipboardData.getData('text/uri-list')
+    if (!/^file:\/\/\//im.test(urls) && (event.clipboardData.getData('text/plain') || event.clipboardData.getData('text/html'))) return
+    if (busyWithFiles.current) return
+    event.preventDefault()
+    busyWithFiles.current = true
+    setPasting(true)
+    void window.agentsync.pasteFiles().then(
+      (uploads) => addFiles(uploads.map(({ name, bytes }) => new File([new Uint8Array(bytes)], name))),
+      (error) => setAttachments((current) => ({ ...current, error: errorMessage(error) })),
+    ).finally(() => {
+      busyWithFiles.current = false
+      setPasting(false)
+    })
+  }
 
   const resize = () => {
     const element = box.current
@@ -66,7 +152,8 @@ export function Composer({
     element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT)}px`
   }
 
-  const submit = () => {
+  const submit = async () => {
+    if (busyWithFiles.current) return
     let target = to
     let body = text
     const mention = parseLeadingMention(text)
@@ -74,43 +161,62 @@ export function Composer({
       target = mention.to
       body = mention.text
       setTo(mention.to)
+      if (target !== 'all' && implementer && !reviewing) onRoles?.('single')
     }
-    if (!body.trim()) return
-    onSend(body, target)
-    setText('')
-    setRecalled(null)
-    requestAnimationFrame(resize)
+    const sent = attachments.files.filter((entry) => body.includes(entry.token))
+    if (!body.trim() && sent.length === 0) return
+    busyWithFiles.current = true
+    setSending(true)
+    try {
+      const files = await Promise.all(sent.map(async ({ file }) => ({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })))
+      await onSend(body, target, files.length ? files : undefined)
+      setText('')
+      setRecalled(null)
+      setAttachments({ files: [], error: null })
+      imageCount.current = 0
+      fileCount.current = 0
+      requestAnimationFrame(resize)
+    } catch (error) {
+      setAttachments((current) => ({ ...current, error: errorMessage(error) }))
+    } finally {
+      busyWithFiles.current = false
+      setSending(false)
+    }
   }
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault()
-    submit()
+    void submit()
   }
 
-  const show = (value: string) => {
+  const show = (value: string, atStart = false) => {
     setText(value)
     requestAnimationFrame(() => {
       resize()
       const element = box.current
-      if (element) element.selectionStart = element.selectionEnd = value.length
+      if (element) element.selectionStart = element.selectionEnd = atStart ? 0 : value.length
     })
   }
 
   /**
-   * ↑ on the first line: the message sent before (again for older ones). ↓ on the last line: newer ones,
-   * then back to your draft. Elsewhere the arrows move the caret as usual.
+   * ↑ first moves to the start of the draft; only at position zero does it recall history.
+   * ↓ on the last line recalls newer messages, then restores the saved draft.
    */
   const recall = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
     const element = event.currentTarget
     if (element.selectionStart !== element.selectionEnd) return false
-    const onFirstLine = !text.slice(0, element.selectionStart).includes('\n')
     const onLastLine = !text.slice(element.selectionEnd).includes('\n')
-    if (event.key === 'ArrowUp' && onFirstLine && history.length > 0) {
+    if (event.key === 'ArrowUp' && element.selectionStart > 0) {
+      element.setSelectionRange(0, 0)
+      element.scrollTop = 0
+      return true
+    }
+    if (event.key === 'ArrowUp' && element.selectionStart === 0 && history.length > 0) {
       if (recalled === 0) return true
       const index = recalled === null ? history.length - 1 : Math.max(0, recalled - 1)
       if (recalled === null) draft.current = text
       setRecalled(index)
-      show(history[index]!)
+      show(history[index]!, true)
       return true
     }
     if (event.key === 'ArrowDown' && recalled !== null && onLastLine) {
@@ -128,15 +234,15 @@ export function Composer({
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return
-    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey) {
+    if (sending || event.nativeEvent.isComposing || event.keyCode === 229) return
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
       if (recall(event)) event.preventDefault()
       return
     }
     // Enter sends; Shift+Enter adds a line. Never send while an IME is composing.
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
     event.preventDefault()
-    submit()
+    void submit()
   }
 
   return (
@@ -150,7 +256,11 @@ export function Composer({
               type="button"
               className={`chip chip-${target.id}`}
               aria-pressed={to === target.id}
-              onClick={() => setTo(target.id)}
+              onClick={() => {
+                setTo(target.id)
+                // Addressing one AI means a plain request, so a chosen 実装＋レビュー is cleared.
+                if (target.id !== 'all' && implementer && !reviewing) onRoles?.('single')
+              }}
             >
               {target.label}
             </button>
@@ -162,7 +272,7 @@ export function Composer({
               <button type="button" aria-pressed={approvalMode === 'ask'} title="ファイルの編集とコマンドの実行の前に、毎回確認します" onClick={() => onApprovalMode('ask')}>
                 承認制
               </button>
-              <button type="button" aria-pressed={approvalMode === 'auto'} title="確認せずに進めます（各 CLI の auto モード）。作業ブランチで使ってください" onClick={() => onApprovalMode('auto')}>
+              <button type="button" aria-pressed={approvalMode === 'auto'} title="作業フォルダ外の変更や外部操作も確認なしで進めます" onClick={() => onApprovalMode('auto')}>
                 auto
               </button>
             </div>
@@ -225,7 +335,21 @@ export function Composer({
           )}
         </div>
       </div>
+      {attachments.error && <p className="attachment-error error" role="alert">{attachments.error}</p>}
       <div className="composer-bottom">
+        <input
+          type="file"
+          ref={picker}
+          multiple
+          hidden
+          onChange={(event) => {
+            if (!busyWithFiles.current) addFiles(Array.from(event.currentTarget.files ?? []))
+            event.currentTarget.value = ''
+          }}
+        />
+        <button type="button" className="attach-button" aria-label="ファイルを添付" title="ファイルを添付" disabled={sending || pasting} onClick={() => picker.current?.click()}>
+          <PlusIcon size={19} />
+        </button>
         <label htmlFor={messageId} className="visually-hidden">
           メッセージ
         </label>
@@ -234,6 +358,7 @@ export function Composer({
           ref={box}
           rows={1}
           value={text}
+          readOnly={sending}
           placeholder={
             dialogue
               ? '割り込んで発言…（対話は止めずに次の話者へ渡します）'
@@ -247,8 +372,9 @@ export function Composer({
             resize()
           }}
           onKeyDown={onKeyDown}
+          onPaste={pasteFiles}
         />
-        <button type="submit" className="send" aria-label="送信" data-testid="send" disabled={!text.trim()}>
+        <button type="submit" className="send" aria-label="送信" data-testid="send" disabled={sending || pasting || (!text.trim() && attached.length === 0)}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { applyEvent } from '../../shared/state'
-import type { ChatEventEnvelope, ChatState, SendRequest } from '../../shared/types'
+import type { AttachmentUpload, ChatEventEnvelope, ChatState, SendRequest } from '../../shared/types'
 
 /** Mirrors one conversation's state in the main process: a snapshot first, then events. */
 export function useChat(conversationId: string) {
@@ -47,7 +47,7 @@ export function useChat(conversationId: string) {
     }
   }, [conversationId])
 
-  const send = useCallback((request: SendRequest) => window.agentsync.send(conversationId, request), [conversationId])
+  const send = useCallback((request: SendRequest, files?: AttachmentUpload[]) => window.agentsync.send(conversationId, request, files), [conversationId])
   const stop = useCallback(() => window.agentsync.stop(conversationId), [conversationId])
 
   return { state, loadError, send, stop }

@@ -5,13 +5,64 @@ import { Sidebar } from './components/Sidebar'
 import { UsagePanel } from './components/UsagePanel'
 import { keepPane, selectConversation, splitPane, type ConversationPane } from './panes'
 import { SplitIcon } from './components/icons'
-import type { ConversationKind } from '../../shared/types'
+import type { ConversationKind, SendTarget } from '../../shared/types'
 import { errorMessage } from './errors'
 import { useConversations } from './useConversations'
 
+function saved<T>(key: string): Record<string, T> {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? '{}') ?? {}
+  } catch {
+    return {}
+  }
+}
+
+function forget<T>(current: Record<string, T>, id: string): Record<string, T> {
+  if (!Object.hasOwn(current, id)) return current
+  const next = { ...current }
+  delete next[id]
+  return next
+}
+
 export function App() {
   const conversations = useConversations()
+  const [unread, setUnread] = useState(() => saved<number>('agentsync-unread'))
+  const [recipients, setRecipients] = useState(() => saved<SendTarget>('agentsync-recipients'))
+  useEffect(() => { localStorage.setItem('agentsync-unread', JSON.stringify(unread)) }, [unread])
+  useEffect(() => { localStorage.setItem('agentsync-recipients', JSON.stringify(recipients)) }, [recipients])
   const [panes, setPanes] = useState<ConversationPane[]>([{ key: 0, id: null }])
+  const visible = useRef(panes)
+  visible.current = panes
+  const [panel, setPanel] = useState<'connections' | 'usage' | null>(null)
+  const obscured = useRef(false)
+  obscured.current = panel !== null
+  useEffect(() => window.agentsync.onEvent(({ conversationId, event }) => {
+    if (event.type !== 'message:update' || event.message.status !== 'done') return
+    if (event.message.from !== 'gpt' && event.message.from !== 'claude') return
+    if (document.hasFocus() && !document.hidden && !obscured.current && visible.current.some((pane) => pane.id === conversationId)) return
+    setUnread((current) => ({ ...current, [conversationId]: (current[conversationId] ?? 0) + 1 }))
+  }), [])
+
+  useEffect(() => {
+    const markVisible = () => {
+      if (!document.hasFocus() || document.hidden || panel) return
+      setUnread((current) => {
+        const opened = panes.flatMap(({ id }) => id && current[id] ? [id] : [])
+        if (!opened.length) return current
+        const next = { ...current }
+        for (const id of opened) delete next[id]
+        return next
+      })
+    }
+    markVisible()
+    window.addEventListener('focus', markVisible)
+    document.addEventListener('visibilitychange', markVisible)
+    return () => {
+      window.removeEventListener('focus', markVisible)
+      document.removeEventListener('visibilitychange', markVisible)
+    }
+  }, [panes, panel])
+
   const [selected, setSelected] = useState(0)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
@@ -33,7 +84,6 @@ export function App() {
     }
   }
   const resize = (value: number) => setRatio(Math.min(75, Math.max(25, value)))
-  const [panel, setPanel] = useState<'connections' | 'usage' | null>(null)
   // Which list the sidebar shows: chats or coding conversations. Follows the open conversation.
   const [mode, setMode] = useState<ConversationKind>('chat')
   const activeKind = conversations?.find((c) => c.id === activeId)?.kind
@@ -91,6 +141,8 @@ export function App() {
     void window.agentsync.deleteConversation(id).then(
       (deleted) => {
         if (!deleted) return
+        setUnread((current) => forget(current, id))
+        setRecipients((current) => forget(current, id))
         setPanes((current) => current.map((pane) => pane.id === id ? { ...pane, id: remaining[0]?.id ?? null } : pane))
       },
       (error: unknown) => console.error(errorMessage(error)),
@@ -111,6 +163,7 @@ export function App() {
       <Sidebar
         conversations={conversations}
         activeId={activeId}
+        unread={unread}
         mode={mode}
         onMode={switchMode}
         onSelect={setActiveId}
@@ -158,7 +211,13 @@ export function App() {
                   </select>
                 )}
                 {pane.id ? (
-                  <ChatView key={pane.id} conversationId={pane.id} active={selected === pane.key} independentScroll={split} initialScrollTop={pane.initialScrollTop} />
+                  <ChatView key={pane.id} conversationId={pane.id}
+                    recipient={recipients[pane.id] ?? 'all'}
+                    onRecipient={(to) => {
+                      const id = pane.id!
+                      setRecipients((current) => ({ ...current, [id]: to }))
+                    }}
+                    active={selected === pane.key} independentScroll={split} initialScrollTop={pane.initialScrollTop} />
                 ) : (
                   <main className="chat chat-blank"><div className="empty"><h2>会話を選ぶか、新しく始めましょう</h2><button type="button" className="new-conversation" onClick={mode === 'code' ? createCodeConversation : createConversation}>新しい会話…</button></div></main>
                 )}

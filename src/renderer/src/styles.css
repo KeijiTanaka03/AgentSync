@@ -248,6 +248,29 @@ button {
   cursor: pointer;
 }
 
+.conversation-label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.conversation-folder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.conversation-folder svg { flex: none; }
+
+.conversation-folder span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -256,7 +279,30 @@ button {
   white-space: nowrap;
 }
 
-.conversation-active .conversation-title {
+.conversation-active .conversation-label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.conversation-folder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.conversation-folder svg { flex: none; }
+
+.conversation-folder span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-title {
   font-weight: 600;
 }
 
@@ -536,17 +582,6 @@ button {
 .workspace-branch-icon {
   margin-left: 4px;
   color: var(--muted);
-}
-
-/* Changes go ahead without asking: hard to miss. */
-.auto-badge {
-  flex: none;
-  padding: 1px 9px;
-  border-radius: 999px;
-  background: var(--claude);
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .header h1 {
@@ -1119,6 +1154,79 @@ button {
   border: 1px solid var(--claude);
   border-radius: 12px;
   background: var(--dialogue-bg);
+}
+
+.question-card .question {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.question legend {
+  margin-bottom: 6px;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+
+.question-header {
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--sidebar-hover);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.question-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.question-option small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.question-option[aria-pressed='true'] {
+  border-color: var(--claude);
+  box-shadow: inset 0 0 0 1px var(--claude);
+}
+
+.question-other {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.work-note {
+  align-items: flex-start;
+}
+
+.work-note-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .approval-title {
@@ -1774,8 +1882,112 @@ button {
   gap: 10px;
 }
 
+.attach-button {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.attach-button:hover,
+button.attachment-chip:hover,
+.attachment-remove:hover {
+  background: var(--sidebar-hover);
+}
+
+.attach-button:disabled,
+.attachment-remove:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.composer .attachment-list {
+  max-height: 140px;
+  overflow: auto;
+}
+
+.message-attachments {
+  margin-top: 8px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(100%, 280px);
+  padding: 4px 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  text-align: left;
+  line-height: 1.35;
+}
+
+button.attachment-chip,
+.attachment-remove {
+  cursor: pointer;
+}
+
+.attachment-icon,
+.attachment-thumbnail {
+  flex: none;
+  color: var(--muted);
+}
+
+.attachment-thumbnail {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  border-radius: 5px;
+}
+
+.attachment-info {
+  display: grid;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.attachment-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.attachment-info small {
+  color: var(--muted);
+}
+
+.attachment-remove {
+  display: grid;
+  place-items: center;
+  flex: none;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.attachment-error {
+  margin: 0;
+}
+
 .composer textarea {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 28px;
   max-height: 220px;
   padding: 6px 2px;
@@ -1902,3 +2114,32 @@ button {
 .is-split .composer-actions { flex-wrap: wrap; }
 .is-split .timeline { padding-left: 14px; padding-right: 14px; }
 @media (max-width: 760px) { .workspace-toolbar { padding-left: 84px; } }
+
+
+/* Plan usage stays visible while the conversation list scrolls. */
+.usage-summary { flex-shrink: 0; padding: 10px 8px 2px; border-top: 1px solid var(--line); -webkit-app-region: no-drag; }
+.usage-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); margin-bottom: 10px; }
+.usage-summary-heading button { font: inherit; font-size: 12px; color: var(--text-2); background: none; border: 0; padding: 2px 0; cursor: pointer; }
+.usage-summary-heading button:hover { text-decoration: underline; }
+.usage-summary-agent { margin: 8px 0; }
+.usage-summary-agent > b { display: block; font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+.usage-summary-claude > b { color: var(--claude-ink); }
+.usage-summary-gpt > b { color: var(--gpt-ink); }
+.usage-summary-window { display: grid; grid-template-columns: minmax(40px, 1fr) 60px 38px; align-items: center; gap: 7px; margin: 4px 0; font-size: 10px; color: var(--muted); }
+.usage-summary-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-summary .usage-bar { height: 5px; margin: 0; background: var(--line); }
+.usage-summary-percent { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-summary-unavailable { font-size: 10px; color: var(--muted); }
+
+.unread-badge {
+  flex: none;
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ba3c35;
+  color: white;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+}

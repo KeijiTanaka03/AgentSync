@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { AgentId, AgentInfo, ApprovalDecision, ChatMessage, ConversationKind } from '../../../shared/types'
+import type { AgentId, AgentInfo, ApprovalDecision, ChatMessage, ConversationKind, QuestionAnswers } from '../../../shared/types'
 import { ArrowDownIcon } from './icons'
 import { MessageItem } from './MessageItem'
 
@@ -23,9 +23,11 @@ interface TimelineProps {
   agents: Record<AgentId, AgentInfo>
   kind?: ConversationKind
   onApprove?(approvalId: string, decision: ApprovalDecision): void
+  onAnswer?(approvalId: string, answers: QuestionAnswers | null): void
+  onRevealAttachment?(id: string): Promise<void>
 }
 
-export function Timeline({ messages, agents, kind = 'chat', onApprove, followOwnMessages = true, initialScrollTop }: TimelineProps) {
+export function Timeline({ messages, agents, kind = 'chat', onApprove, onAnswer, onRevealAttachment, followOwnMessages = true, initialScrollTop }: TimelineProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
   const initialized = useRef(false)
@@ -100,6 +102,8 @@ export function Timeline({ messages, agents, kind = 'chat', onApprove, followOwn
                 activity={message.from !== 'user' && message.from !== 'system' && message.status === 'streaming' ? agents[message.from].activity : null}
                 interrupt={inDialogue && message.from === 'user'}
                 {...(onApprove ? { onApprove } : {})}
+                {...(onAnswer ? { onAnswer } : {})}
+                {...(onRevealAttachment ? { onRevealAttachment } : {})}
               />
             ))}
           </section>

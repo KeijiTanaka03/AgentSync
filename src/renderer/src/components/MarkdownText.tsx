@@ -1,9 +1,10 @@
 import { isValidElement, useRef, type ComponentProps } from 'react'
-import Markdown, { type Components } from 'react-markdown'
+import Markdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import remarkCjkFriendly from 'remark-cjk-friendly'
 import remarkGfm from 'remark-gfm'
 import { CopyButton } from './CopyButton'
+import { ExternalLink, UrlText } from './UrlText'
 
 // remark-cjk-friendly lets **強調** work next to Japanese punctuation, e.g. 築地の**「市場」**です
 // (plain CommonMark leaves the asterisks as they are there).
@@ -37,7 +38,12 @@ const components: Components = {
   a(props) {
     const { node, ...rest } = props
     void node
-    return <a {...rest} target="_blank" rel="noreferrer" />
+    return <ExternalLink {...rest} />
+  },
+  code(props) {
+    const { node, children, ...rest } = props
+    void node
+    return <code {...rest}>{typeof children === 'string' ? <UrlText text={children} /> : children}</code>
   },
   pre: CodeBlock,
 }
@@ -45,7 +51,7 @@ const components: Components = {
 export function MarkdownText({ text }: { text: string }) {
   return (
     <div className="md">
-      <Markdown remarkPlugins={remarkPlugins} components={components}>
+      <Markdown urlTransform={(url, key) => key === 'href' && /^file:\/\/\//i.test(url) ? url : defaultUrlTransform(url)} remarkPlugins={remarkPlugins} components={components}>
         {text}
       </Markdown>
     </div>

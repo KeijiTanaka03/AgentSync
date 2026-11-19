@@ -32,8 +32,15 @@ class FakeAppServer implements RpcConnection {
       case 'turn/start':
         this.turnCount += 1
         return { turn: { id: `turn-${this.turnCount}` } } as T
+      case 'turn/steer':
       case 'turn/interrupt':
         return {} as T
+      case 'mcpServerStatus/list': {
+        // The endpoint the thread's connection really uses (its origin), as Codex reports it.
+        const { serverName } = params as { serverName: string }
+        const server = this.mcpServers[serverName] as { url?: string } | undefined
+        return { data: server ? [{ name: serverName, httpOrigin: server.url ? new URL(server.url).origin : null }] : [] } as T
+      }
       case 'config/read':
         return { config: { model: this.configuredModel, model_reasoning_effort: this.configuredEffort, mcp_servers: this.mcpServers } } as T
       case 'model/list':
@@ -74,6 +81,7 @@ function request(overrides: Partial<AgentRunRequest> = {}) {
   const req: AgentRunRequest = {
     prompt: '【ユーザー → あなた】\nこんにちは',
     systemPrompt: 'SYS',
+    askUser: async () => null,
     sessionId: null,
     cwd: '/tmp/chat',
     model: null,
@@ -99,6 +107,37 @@ function setup() {
 }
 
 describe('CodexAdapter', () => {
+  it('steers the active turn and stops accepting follow-ups after completion', async () => {
+    const { server, adapter } = setup()
+    let steer!: (text: string) => Promise<boolean>
+    const reply = adapter.run(request({ onSteer: (send) => { steer = send } }).req)
+    await flush()
+    await expect(steer('テスト不要です')).resolves.toBe(true)
+    expect(server.requests.at(-1)).toMatchObject({
+      method: 'turn/steer',
+      params: { threadId: 'thread-1', expectedTurnId: 'turn-1', input: [{ text: 'テスト不要です' }] },
+    })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+    await reply
+    await expect(steer('追記')).resolves.toBe(false)
+  })
+
+  it('uses native localImage items for attached images', async () => {
+    const { server, adapter } = setup()
+    const { req } = request({ attachments: [
+      { name: 'screen.png', path: '/tmp/screen.png', size: 40, mediaType: 'image/png' },
+      { name: 'notes.txt', path: '/tmp/notes.txt', size: 10 },
+    ] })
+    const reply = adapter.run(req)
+    await flush()
+    expect(server.requests.find((entry) => entry.method === 'turn/start')!.params.input).toEqual([
+      { type: 'text', text: req.prompt, text_elements: [] },
+      { type: 'localImage', path: '/tmp/screen.png' },
+    ])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await expect(reply).resolves.toMatchObject({ status: 'done' })
+  })
+
   it('starts a read-only thread, streams the reply and finishes with the turn', async () => {
     const { server, adapter } = setup()
     const { req, texts, sessions, models } = request()
@@ -111,6 +150,7 @@ describe('CodexAdapter', () => {
       cwd: '/tmp/chat',
       sandbox: 'read-only',
       approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
       developerInstructions: 'SYS',
     })
     expect(server.requests[3]!.params.input).toEqual([{ type: 'text', text: '【ユーザー → あなた】\nこんにちは', text_elements: [] }])
@@ -260,6 +300,49 @@ describe('CodexAdapter', () => {
     expect(texts.join('')).toBe('一つ目\n\n二つ目')
   })
 
+  it('keeps commentary out of the answer and puts it in the work log, as Codex does', async () => {
+    const { server, adapter } = setup()
+    const tools: ToolLogEntry[] = []
+    const { req, texts } = request({ onTool: (tool) => tools.push(tool) })
+    const result = adapter.run(req)
+    await flush()
+    server.push('item/started', { turnId: 'turn-1', item: { type: 'agentMessage', id: 'a', text: '', phase: 'commentary' } })
+    server.push('item/agentMessage/delta', { turnId: 'turn-1', itemId: 'a', delta: 'コードを確認します。' })
+    server.push('item/completed', { turnId: 'turn-1', item: { type: 'agentMessage', id: 'a', text: 'コードを確認します。', phase: 'commentary' } })
+    server.push('item/started', { turnId: 'turn-1', item: { type: 'agentMessage', id: 'b', text: '', phase: 'final_answer' } })
+    server.push('item/agentMessage/delta', { turnId: 'turn-1', itemId: 'b', delta: '直しました。' })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await expect(result).resolves.toEqual({ text: '直しました。', status: 'done' })
+    expect(texts.join('')).toBe('直しました。')
+    expect(tools).toEqual([{ id: 'a', kind: 'note', title: 'コードを確認します。', status: 'done' }])
+  })
+
+  it('asks the user the questions Codex asks and sends the answers back', async () => {
+    const { server, adapter } = setup()
+    const asked: unknown[] = []
+    const { req } = request({ askUser: async (questions) => { asked.push(questions); return { scope: ['全部'] } } })
+    const result = adapter.run(req)
+    await flush()
+    await expect(server.onServerRequest('item/tool/requestUserInput', {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'q', isBlocking: true, autoResolutionMs: null,
+      questions: [{ id: 'scope', header: '範囲', question: 'どこまで直しますか', isOther: true, isSecret: false, options: [{ label: '全部', description: 'すべて' }] }],
+    })).resolves.toEqual({ answers: { scope: { answers: ['全部'] } } })
+    expect(asked).toEqual([[{ id: 'scope', header: '範囲', question: 'どこまで直しますか', options: [{ label: '全部', description: 'すべて' }], multiSelect: false, allowOther: true }]])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await result
+  })
+
+  it('steers with images as well as text', async () => {
+    const { server, adapter } = setup()
+    let steer!: (text: string, attachments?: { name: string; path: string; size: number; mediaType?: 'image/png' }[]) => Promise<boolean>
+    const reply = adapter.run(request({ onSteer: (send) => { steer = send } }).req)
+    await flush()
+    await expect(steer('これも見て', [{ name: 'a.png', path: '/tmp/a.png', size: 3, mediaType: 'image/png' }])).resolves.toBe(true)
+    expect(server.requests.at(-1)!.params.input).toEqual([{ type: 'text', text: 'これも見て', text_elements: [] }, { type: 'localImage', path: '/tmp/a.png' }])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+    await reply
+  })
+
   it('interrupts the turn when stopped', async () => {
     const { server, adapter } = setup()
     const { req, controller } = request()
@@ -294,6 +377,53 @@ describe('CodexAdapter', () => {
 })
 
 describe('Codex in a coding conversation', () => {
+  it('updates connector and sandbox permissions when switching out of always-allow', async () => {
+    const { server, adapter } = setup()
+    server.mcpServers = { notion: { url: 'https://mcp.notion.com/mcp' } }
+    const full = adapter.run(request({ cwd: '/work/app', access: 'write', approval: 'auto' }).req)
+    await flush()
+    await flush()
+    expect(server.requests.find((r) => r.method === 'thread/start')!.params).toMatchObject({ sandbox: 'danger-full-access', approvalPolicy: 'never', config: { 'mcp_servers.notion.default_tools_approval_mode': 'approve' } })
+    expect(server.requests.find((r) => r.method === 'turn/start')!.params.sandboxPolicy).toEqual({ type: 'dangerFullAccess' })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await full
+    const limited = adapter.run(request({ cwd: '/work/app', sessionId: 'thread-1', access: 'read', approval: 'auto' }).req)
+    await flush()
+    await flush()
+    expect(server.requests.find((r) => r.method === 'thread/resume')!.params).toMatchObject({ sandbox: 'read-only', config: { 'mcp_servers.notion.default_tools_approval_mode': 'prompt' } })
+    expect(server.requests.filter((r) => r.method === 'turn/start').at(-1)!.params.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false })
+    server.push('turn/completed', { turn: { id: 'turn-2', status: 'completed', error: null } })
+    await limited
+    adapter.dispose()
+  })
+
+  it('routes auto approvals to Codex review and restores user review for later read/ask turns', async () => {
+    const { server, adapter } = setup()
+    const auto = adapter.run(request({ cwd: '/work/app', access: 'write', approval: 'auto' }).req)
+    await flush()
+    await flush()
+    expect(server.requests.find((r) => r.method === 'thread/start')!.params).toMatchObject({
+      sandbox: 'danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user',
+    })
+    expect(server.requests.find((r) => r.method === 'turn/start')!.params).toMatchObject({
+      approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' },
+    })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await auto
+    for (const access of ['read', 'write'] as const) {
+      const turn = adapter.run(request({ cwd: '/work/app', sessionId: 'thread-1', access, approval: 'ask' }).req)
+      await flush()
+      await flush()
+      expect(server.requests.filter((r) => r.method === 'turn/start').at(-1)!.params).toMatchObject({
+        approvalsReviewer: 'user', sandboxPolicy: { type: access === 'read' ? 'readOnly' : 'workspaceWrite' },
+      })
+      const turnNumber = server.requests.filter((r) => r.method === 'turn/start').length
+      server.push('turn/completed', { turn: { id: `turn-${turnNumber}`, status: 'completed', error: null } })
+      await turn
+    }
+    adapter.dispose()
+  })
+
   /** Starts a write turn in /work/app; returns what it reports and asks. */
   async function writeTurn(answer: 'allow' | 'deny' = 'allow') {
     const { server, adapter } = setup()
@@ -388,12 +518,14 @@ describe('Codex in a coding conversation', () => {
 })
 
 describe('Codex with connectors (Notion, …)', () => {
-  async function turn(answer: 'allow' | 'deny' = 'allow') {
+  async function turn(answer: 'allow' | 'deny' = 'allow', access: AgentRunRequest['access'] = 'chat', notion: unknown = { url: 'https://mcp.notion.com/mcp' }) {
     const { server, adapter } = setup()
-    server.mcpServers = { notion: { url: 'https://mcp.notion.com/mcp' } }
+    server.mcpServers = { notion }
     const asked: ApprovalRequest[] = []
     const tools: ToolLogEntry[] = []
     const { req } = request({
+      access,
+      ...(access === 'chat' ? {} : { cwd: '/work/app' }),
       onTool: (tool) => tools.push(tool),
       requestApproval: async (ask) => {
         asked.push(ask)
@@ -430,5 +562,22 @@ describe('Codex with connectors (Notion, …)', () => {
     await done
   })
 
+  it('on a read-only turn, lets only verified reads through and refuses the rest without asking', async () => {
+    const { server, asked, done, elicit } = await turn('allow', 'read')
+    await expect(elicit('notion-search', true)).resolves.toEqual({ action: 'accept', content: {} })
+    // The server's own read-only hint is not enough, and a change is never asked about.
+    await expect(elicit('notion-get-and-archive', true)).resolves.toEqual({ action: 'decline' })
+    await expect(elicit('notion-create-pages', false)).resolves.toEqual({ action: 'decline' })
+    expect(asked).toEqual([])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
+  it('on a read-only turn, refuses a server that takes a known name at another URL', async () => {
+    const { server, asked, done, elicit } = await turn('allow', 'read', { url: 'https://evil.example/mcp' })
+    await expect(elicit('notion-search', true)).resolves.toEqual({ action: 'decline' })
+    expect(asked).toEqual([])
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+    await done
+  })
 })
 

@@ -1,11 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from 'electron'
+import { fileURLToPath } from 'node:url'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, shell, type MenuItemConstructorOptions } from 'electron'
 import { execFile } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { readClipboardFiles } from './clipboardFiles'
+import { ReplyBadge } from './replyBadge'
 import type { AgentId, CliId, ConnectionList, MenuCommand, UsageReport } from '../shared/types'
 import {
   parseAgentId,
+  parseAnswers,
   parseApproval,
   parseApprovalMode,
   parseRoles,
@@ -46,10 +50,15 @@ if (!app.isPackaged) {
   app.setPath('userData', userData)
 }
 
+const replyBadge = new ReplyBadge((label) => {
+  if (process.platform === 'darwin') app.dock?.setBadge(label)
+})
+
 let mainWindow: BrowserWindow | null = null
 let manager: ChatManager | null = null
 let settings: SettingsStore | null = null
 let codexAdapter: CodexAdapter | null = null
+let claudeAdapter: ClaudeAdapter | null = null
 /** The empty folder chats run in (also where the CLIs are asked about usage and connectors). */
 let chatFolder: string | null = null
 
@@ -110,6 +119,7 @@ async function showCliLocations(): Promise<void> {
         next.cliPaths = { claude: null, codex: null }
       })
       codexAdapter?.dispose() // the next reply starts Codex again from wherever it is found
+      claudeAdapter?.reload()
       continue
     }
     const name: CliName = response === 1 ? 'claude' : 'codex'
@@ -129,6 +139,7 @@ async function showCliLocations(): Promise<void> {
       next.cliPaths[name] = file
     })
     if (name === 'codex') codexAdapter?.dispose()
+    else claudeAdapter?.reload()
   }
 }
 
@@ -308,6 +319,7 @@ function createManager(): ChatManager {
     env: () => childEnv(),
     listCwd: chatDirectory,
   })
+  claudeAdapter = claude
   const gpt = new CodexAdapter({
     clientVersion: app.getVersion(),
     connect: async () => {
@@ -319,6 +331,14 @@ function createManager(): ChatManager {
 
   return new ChatManager({
     store: new ConversationStore(path.join(dataDirectory, 'conversations')),
+    attachmentThumbnail: (bytes) => {
+      const image = nativeImage.createFromBuffer(bytes)
+      if (image.isEmpty()) return undefined
+      const { width, height } = image.getSize()
+      const scale = Math.min(1, 160 / Math.max(width, height))
+      const preview = scale === 1 ? image : image.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) })
+      return `data:image/jpeg;base64,${preview.toJPEG(80).toString('base64')}`
+    },
     adapters: { claude, gpt },
     cwd: chatDirectory,
     models: { claude: modelFromEnv('claude') ?? saved.models.claude, gpt: modelFromEnv('gpt') ?? saved.models.gpt },
@@ -327,15 +347,36 @@ function createManager(): ChatManager {
     gitBranch,
     gitDiff,
     onEffortsChange: (efforts) => remember((next) => void (next.efforts = efforts)),
-    emitEvent: (envelope) => broadcast('chat:event', envelope),
+    emitEvent: (envelope) => {
+      broadcast('chat:event', envelope)
+      const completed = replyBadge.receive(envelope, mainWindow?.isFocused() === true)
+      if (completed && Notification.isSupported()) {
+        const notification = new Notification({ title: 'AgentSync', body: '回答が完了しました。', silent: true })
+        notification.on('click', () => showWindow())
+        notification.show()
+      }
+    },
     emitConversations: (conversations) => broadcast('conversations:changed', conversations),
   })
 }
 
 function createWindow(): BrowserWindow {
+  const saved = settings?.load().window
+  const bounds = saved && (() => {
+    const { workArea } = screen.getDisplayMatching(saved)
+    const width = Math.min(workArea.width, Math.max(720, saved.width))
+    const height = Math.min(workArea.height, Math.max(520, saved.height))
+    return {
+      x: Math.max(workArea.x, Math.min(saved.x, workArea.x + workArea.width - width)),
+      y: Math.max(workArea.y, Math.min(saved.y, workArea.y + workArea.height - height)),
+      width,
+      height,
+    }
+  })()
   const window = new BrowserWindow({
     width: 1180,
     height: 820,
+    ...bounds,
     minWidth: 720,
     minHeight: 520,
     show: false,
@@ -351,7 +392,20 @@ function createWindow(): BrowserWindow {
     },
   })
 
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    if (!saved || saved.maximized) window.maximize()
+    window.show()
+  })
+  window.on('close', () => {
+    const bounds = window.getNormalBounds()
+    const maximized = window.isMaximized()
+    try {
+      settings?.update((next) => { next.window = { ...bounds, maximized } })
+    } catch (error) {
+      console.error('[settings] could not save window position:', error)
+    }
+  })
+  window.on('focus', () => replyBadge.clear())
   window.webContents.setWindowOpenHandler(({ url }) => {
     openExternally(url)
     return { action: 'deny' }
@@ -478,13 +532,27 @@ async function confirmDelete(id: string, chat: ChatManager): Promise<boolean> {
     defaultId: 1,
     cancelId: 1,
     message: `「${title}」を削除しますか？`,
-    detail: 'AgentSync に残っているこの会話の記録を消します。元には戻せません。Claude Code と Codex 側の履歴は残ります。',
+    detail: 'AgentSync に残っているこの会話の記録と添付ファイルを消します。元には戻せません。Claude Code と Codex 側の履歴は残ります。',
   }
   const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options)
   return response === 0
 }
 
 function registerIpc(): void {
+  // A link to a file opens it in its usual app (a folder in Finder), as clicking one in Claude Code or Codex does.
+  ipcMain.handle('links:open-local', (event, href: unknown) => {
+    fromMainWindow(event)
+    if (typeof href !== 'string') return
+    try {
+      const target = /^file:\/\/\//i.test(href) ? fileURLToPath(href) : decodeURIComponent(href)
+      if (!path.isAbsolute(target) || target.startsWith('//')) return
+      const existing = (candidate: string) => statSync(candidate, { throwIfNoEntry: false })
+      const file = existing(target) ? target : target.replace(/:\d+(?::\d+)?$/, '')
+      if (existing(file)) void shell.openPath(file)
+    } catch {
+      // Invalid or inaccessible local link.
+    }
+  })
   ipcMain.handle('conversations:list', (event) => fromMainWindow(event).list())
   ipcMain.handle('conversations:create', (event) => fromMainWindow(event).create())
   ipcMain.handle('conversations:create-code', async (event) => {
@@ -509,8 +577,18 @@ function registerIpc(): void {
     return true
   })
   ipcMain.handle('chat:snapshot', (event, id: unknown) => fromMainWindow(event).snapshot(parseConversationId(id)))
-  ipcMain.handle('chat:send', (event, id: unknown, request: unknown) => {
-    fromMainWindow(event).send(parseConversationId(id), parseSendRequest(request))
+  ipcMain.handle('chat:send', (event, id: unknown, request: unknown, files: unknown) => {
+    fromMainWindow(event).send(parseConversationId(id), parseSendRequest(request), files)
+  })
+  ipcMain.handle('attachments:paste', (event) => {
+    fromMainWindow(event)
+    if (!mainWindow?.isFocused()) return []
+    return readClipboardFiles()
+  })
+  ipcMain.handle('attachments:reveal', (event, id: unknown, attachment: unknown) => {
+    const chat = fromMainWindow(event)
+    if (typeof attachment !== 'string') throw new Error('添付ファイルの指定が不正です')
+    shell.showItemInFolder(chat.attachmentPath(parseConversationId(id), attachment))
   })
   ipcMain.handle('chat:stop', (event, id: unknown) => {
     fromMainWindow(event).stop(parseConversationId(id))
@@ -525,6 +603,10 @@ function registerIpc(): void {
     const answer = parseApproval(approvalId, decision)
     fromMainWindow(event).approve(parseConversationId(id), answer.id, answer.decision)
   })
+  ipcMain.handle('chat:answer', (event, id: unknown, approvalId: unknown, answers: unknown) => {
+    const answer = parseAnswers(approvalId, answers)
+    fromMainWindow(event).answer(parseConversationId(id), answer.id, answer.answers)
+  })
   ipcMain.handle('usage:read', (event) => {
     fromMainWindow(event)
     return readUsage()
@@ -538,6 +620,7 @@ function registerIpc(): void {
     const which = parseCli(cli)
     await addConnection(which, await requireExecutable(which), childEnv(), chatFolder ?? app.getPath('userData'), parseConnectionName(name), parseConnectionUrl(url))
     if (which === 'codex') codexAdapter?.dispose() // the next reply starts Codex with the new connector
+    else claudeAdapter?.reload()
   })
   ipcMain.handle('connections:remove', async (event, cli: unknown, name: unknown) => {
     fromMainWindow(event)
@@ -556,6 +639,7 @@ function registerIpc(): void {
     if (response !== 0) return false
     await removeConnection(await requireExecutable(which), childEnv(), chatFolder ?? app.getPath('userData'), connection)
     if (which === 'codex') codexAdapter?.dispose()
+    else claudeAdapter?.reload()
     return true
   })
   ipcMain.handle('connections:login', async (event, cli: unknown, name: unknown) => {
@@ -622,7 +706,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    app.quit()
   })
 
   app.on('before-quit', () => {

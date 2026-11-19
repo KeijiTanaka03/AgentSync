@@ -1,4 +1,4 @@
-import type { AgentActivity, AgentChoices, AgentId, ApprovalEntry, ApprovalMode, ToolLogEntry } from '../../shared/types'
+import type { AgentActivity, AgentChoices, AgentId, AgentQuestion, ApprovalEntry, ApprovalMode, FileAttachment, QuestionAnswers, ToolLogEntry } from '../../shared/types'
 
 /**
  * What an agent may do on this turn. In every case the CLI keeps its own abilities (web search, the
@@ -12,9 +12,14 @@ export type Access = 'chat' | 'read' | 'write'
 /** What an adapter asks the user to allow. */
 export type ApprovalRequest = Pick<ApprovalEntry, 'kind' | 'title' | 'detail'>
 
+export type AgentAttachment = Pick<FileAttachment, 'name' | 'size' | 'mediaType'> & { path: string }
+
 export interface AgentRunRequest {
   /** Text sent to the agent for this turn. */
   prompt: string
+  /** Hands the adapter's way to add a message to the turn in progress (text, and images). */
+  onSteer?(steer: (text: string, attachments?: AgentAttachment[]) => Promise<boolean>): void
+  attachments?: AgentAttachment[]
   systemPrompt: string
   /** CLI session (Claude) or thread (Codex) to continue. Null starts a new one. */
   sessionId: string | null
@@ -41,6 +46,8 @@ export interface AgentRunRequest {
   onTool(tool: ToolLogEntry): void
   /** Asks the user before an edit or a command; resolves with their answer. */
   requestApproval(request: ApprovalRequest): Promise<'allow' | 'deny'>
+  /** Shows the agent's questions to the user, even in auto; resolves with the answers, or null if skipped. */
+  askUser(questions: AgentQuestion[]): Promise<QuestionAnswers | null>
 }
 
 export interface AgentRunResult {

@@ -8,6 +8,7 @@ import {
   type ApprovalMode,
   type ChatMessage,
   type ConversationKind,
+  type FileAttachment,
   type MessageStatus,
   type NoticeKind,
   type Recipient,
@@ -16,6 +17,7 @@ import {
   type Roles,
 } from '../../shared/types'
 import { isConversationId, isEffort } from '../../shared/validate'
+import { AttachmentStore, parseFileAttachment } from './attachmentStore'
 
 /** What the app remembers about one agent in one conversation. */
 export interface StoredParticipant {
@@ -93,7 +95,7 @@ function parseApproval(raw: unknown): ApprovalEntry | null {
 
 function parseMessage(raw: unknown): ChatMessage | null {
   if (!isRecord(raw)) return null
-  const { id, from, to, text, at, status, error, notice, tools, approvals, implementer, detail } = raw
+  const { id, from, to, text, at, status, error, notice, tools, approvals, implementer, detail, attachments } = raw
   if (!Number.isSafeInteger(id) || (id as number) < 1) return null
   if (!SENDERS.includes(from as Sender) || !RECIPIENTS.includes(to as Recipient)) return null
   if (!isString(text) || !isString(at) || !STATUSES.includes(status as MessageStatus)) return null
@@ -107,6 +109,10 @@ function parseMessage(raw: unknown): ChatMessage | null {
     status: status === 'streaming' ? 'stopped' : (status as MessageStatus),
   }
   if (isString(error)) message.error = error
+  if (from === 'user' && Array.isArray(attachments)) {
+    const files = attachments.map(parseFileAttachment).filter((file): file is FileAttachment => file !== null)
+    if (files.length) message.attachments = files
+  }
   if (Array.isArray(tools)) message.tools = tools.map(parseTool).filter((t): t is ToolLogEntry => t !== null)
   if (Array.isArray(approvals)) message.approvals = approvals.map(parseApproval).filter((a): a is ApprovalEntry => a !== null)
   if (from === 'system') {
@@ -143,7 +149,7 @@ export function parseConversation(raw: unknown, id: string): ConversationData {
     title: isString(raw.title) && raw.title.trim() ? raw.title : DEFAULT_TITLE,
     kind: code ? 'code' : 'chat',
     workdir: code ? (raw.workdir as string) : null,
-    approvalMode: raw.approvalMode === 'auto' ? 'auto' : 'ask',
+    approvalMode: raw.approvalMode === 'always' || raw.approvalMode === 'auto' ? 'auto' : 'ask',
     roles: AGENT_IDS.includes(raw.roles as AgentId) ? (raw.roles as Roles) : 'single',
     pinned: raw.pinned === true,
     createdAt: isString(raw.createdAt) ? raw.createdAt : (messages[0]?.at ?? fallbackTime),
@@ -158,8 +164,11 @@ export function parseConversation(raw: unknown, id: string): ConversationData {
  * Files are written atomically (temp file + rename) and readable only by the user.
  */
 export class ConversationStore {
+  readonly attachments: AttachmentStore
+
   constructor(readonly directory: string) {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
+    this.attachments = new AttachmentStore(path.join(directory, 'attachments'))
   }
 
   /** Every readable conversation, newest first. Unreadable files are skipped and left alone. */
@@ -193,6 +202,7 @@ export class ConversationStore {
 
   remove(id: string): void {
     rmSync(this.file(id), { force: true })
+    this.attachments.remove(id)
   }
 
   private read(id: string): ConversationData {

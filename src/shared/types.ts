@@ -40,31 +40,73 @@ export type ApprovalMode = 'ask' | 'auto'
 /** One step an agent took while replying in a coding conversation (read a file, ran a command, …). */
 export interface ToolLogEntry {
   id: string
-  kind: 'read' | 'search' | 'list' | 'edit' | 'command' | 'web' | 'other'
-  /** One line: a path, a command, a search pattern. */
+  kind: 'read' | 'search' | 'list' | 'edit' | 'command' | 'web' | 'other' | 'note'
+  /** One line: a path, a command, a search pattern. A `note` is what the agent said while working, in full. */
   title: string
   status: 'running' | 'done' | 'failed'
 }
 
-/** Something an agent asked the user to allow. */
+/** One choice of a question an agent asks (Claude Code's AskUserQuestion, Codex's request_user_input). */
+export interface QuestionOption {
+  label: string
+  description: string | null
+}
+
+export interface AgentQuestion {
+  id: string
+  /** A short label for the question. */
+  header: string
+  question: string
+  options: QuestionOption[]
+  multiSelect: boolean
+  /** Whether an answer of one's own may be typed in. */
+  allowOther: boolean
+  /** A secret (a password, a token): typed hidden, handed to the CLI only, never kept. */
+  secret?: boolean
+}
+
+/** The user's answers by question id; null when they chose not to answer. */
+export type QuestionAnswers = Record<string, string[]>
+
+/** Something an agent asked the user to allow, or a question it asked. */
 export interface ApprovalEntry {
   id: string
-  kind: 'command' | 'edit' | 'other'
+  kind: 'command' | 'edit' | 'other' | 'question'
   /** What it wants to do, in a line. */
   title: string
   /** The command or the diff, when there is one. */
   detail: string | null
+  /** `allowed` on a question: answered. `denied`: not answered. */
   status: 'pending' | 'allowed' | 'denied'
+  /** Questions: what was asked, and the answers once given. */
+  questions?: AgentQuestion[]
+  answers?: QuestionAnswers
 }
 
 /** The user's answer to an approval card. `allow-all`: this one and the rest of this reply. */
 export type ApprovalDecision = 'allow' | 'allow-all' | 'deny'
+
+export type AttachmentMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'application/pdf'
+
+export interface FileAttachment {
+  id: string
+  name: string
+  size: number
+  mediaType?: AttachmentMediaType
+  thumbnail?: string
+}
+
+export interface AttachmentUpload {
+  name: string
+  bytes: Uint8Array
+}
 
 export interface ChatMessage {
   id: number
   from: Sender
   to: Recipient
   text: string
+  attachments?: FileAttachment[]
   /** ISO 8601 */
   at: string
   status: MessageStatus
@@ -189,6 +231,8 @@ export interface ChatSnapshot {
 
 /** One row of the conversation list in the sidebar. */
 export interface ConversationSummary {
+  workdir?: string
+  folderName?: string
   id: string
   title: string
   /** ISO 8601. The list is sorted by this, newest first. */
@@ -209,6 +253,8 @@ export type SendTarget = 'all' | AgentId
 export interface SendRequest {
   text: string
   to: SendTarget
+  /** Resolved in the main process after the uploaded bytes have been saved. */
+  attachments?: FileAttachment[]
 }
 
 /** A model an agent's CLI offers. */
@@ -286,7 +332,9 @@ export interface AgentSyncApi {
   setEffort(conversationId: string, agent: AgentId, effort: string | null): Promise<void>
   /** Like `setEffort`. An effort the new model does not accept goes back to the CLI's own setting. */
   setModel(conversationId: string, agent: AgentId, model: string | null): Promise<void>
-  send(conversationId: string, request: SendRequest): Promise<void>
+  send(conversationId: string, request: SendRequest, files?: AttachmentUpload[]): Promise<void>
+  pasteFiles(): Promise<AttachmentUpload[]>
+  revealAttachment(conversationId: string, id: string): Promise<void>
   stop(conversationId: string): Promise<void>
   /** Turns dialogue mode on or off. */
   setDialogue(conversationId: string, on: boolean): Promise<void>
@@ -297,10 +345,14 @@ export interface AgentSyncApi {
   setReview(conversationId: string, implementer: AgentId | null, task?: string): Promise<void>
   /** Answers an approval card. */
   approve(conversationId: string, approvalId: string, decision: ApprovalDecision): Promise<void>
+  /** Answers a question card; null skips it. */
+  answer(conversationId: string, approvalId: string, answers: QuestionAnswers | null): Promise<void>
   setApprovalMode(conversationId: string, mode: ApprovalMode): Promise<void>
   /** Coding: chooses the roles. Nothing starts until a request is sent. */
   setRoles(conversationId: string, roles: Roles): Promise<void>
   /** Each plan's usage limits, read from the CLIs without using any. */
+  /** Opens a link to a local file in its usual app (a folder in Finder). */
+  openLocalLink(href: string): Promise<void>
   usage(): Promise<Record<AgentId, UsageReport>>
   listConnections(): Promise<Record<CliId, ConnectionList>>
   /** Adds a connector reached over HTTP (`url`). */
@@ -315,6 +367,8 @@ export interface AgentSyncApi {
 }
 
 export const MAX_MESSAGE_LENGTH = 100_000
+export const MAX_ATTACHMENTS = 10
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 export const MAX_TITLE_LENGTH = 120
 export const DEFAULT_TITLE = '新しい会話'
 

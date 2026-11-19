@@ -8,6 +8,8 @@ import {
   type AgentChoices,
   type AgentId,
   type AgentInfo,
+  type AgentQuestion,
+  type QuestionAnswers,
   type ApprovalDecision,
   type ApprovalEntry,
   type ApprovalMode,
@@ -16,6 +18,7 @@ import {
   type ChatMessage,
   type ChatSnapshot,
   type DialogueState,
+  type FileAttachment,
   type ReviewState,
   type SendRequest,
   type Workspace,
@@ -23,9 +26,9 @@ import {
   isAgentId,
 } from '../../shared/types'
 import { titleFromMessage } from '../../shared/validate'
-import type { Access, AgentAdapter, ApprovalRequest } from '../agents/types'
+import type { Access, AgentAdapter, AgentAttachment, ApprovalRequest } from '../agents/types'
 import type { ConversationContent, StoredParticipant } from '../store/conversationStore'
-import { chatSystemPrompt, codeSystemPrompt, collectUnseen, formatUnseen, isApproved, replyTarget, turnNote } from './prompt'
+import { attachmentsFor, chatSystemPrompt, codeSystemPrompt, collectUnseen, formatUnseen, isApproved, replyTarget, turnNote } from './prompt'
 
 /** The changes in a project folder, for the reviewer. */
 export interface GitDiff {
@@ -54,7 +57,15 @@ interface PendingApproval {
   messageId: number
   agent: AgentId
   turn: TurnApprovals
-  resolve(decision: 'allow' | 'deny'): void
+  /** Questions are answered with `answers` (null: skipped); approvals with the decision alone. */
+  resolve(decision: 'allow' | 'deny', answers?: QuestionAnswers | null): void
+  question?: boolean
+}
+
+/** The answers kept with the conversation: secret ones are handed to the CLI and dropped. */
+function keptAnswers(entry: ApprovalEntry, answers: QuestionAnswers): QuestionAnswers {
+  const secret = new Set((entry.questions ?? []).filter((q) => q.secret).map((q) => q.id))
+  return Object.fromEntries(Object.entries(answers).filter(([id]) => !secret.has(id)))
 }
 
 /** Replaces the entry with the same id, or adds it at the end (a new array). */
@@ -72,6 +83,7 @@ interface AgentRuntime {
   controller: AbortController | null
   /** A message arrived for this agent while it was busy; run again when it finishes. */
   rerun: boolean
+  steer?: (message: ChatMessage) => boolean
 }
 
 export interface OrchestratorOptions {
@@ -92,6 +104,7 @@ export interface OrchestratorOptions {
   gitBranch?(dir: string): Promise<string | null>
   /** The uncommitted changes of a folder (null when it is not a repository). */
   gitDiff?(dir: string): Promise<GitDiff | null>
+  attachmentPath?(file: FileAttachment): string | null
   now?: () => Date
 }
 
@@ -145,6 +158,11 @@ export class Orchestrator {
   /** Coding: the agent whose reply may change the project now. Only one at a time. */
   private writer: AgentId | null = null
   private readonly pendingApprovals = new Map<string, PendingApproval>()
+  /**
+   * Agents a message sent during a dialogue or 実装＋レビュー was meant for while they worked, but did not reach
+   * in time. They get it on their next turn, or once the loop ends, even if it ends first.
+   */
+  private readonly missed = new Map<AgentId, Access>()
   private nextApprovalNumber = 1
 
   constructor(private readonly options: OrchestratorOptions) {
@@ -156,7 +174,7 @@ export class Orchestrator {
     this.workspace = options.workdir
       ? {
           path: options.workdir,
-          name: path.basename(options.workdir),
+          name: path.basename(options.workdir) || options.workdir,
           branch: null,
         }
       : null
@@ -256,21 +274,28 @@ export class Orchestrator {
 
   send(request: SendRequest): void {
     const text = request.text.trim()
-    if (!text) return
+    const files = request.attachments ?? []
+    if (!text && files.length === 0) return
     // With an implementer chosen, a request starts 実装＋レビュー instead of a plain reply.
-    if (this.workspace && !this.dialogue && !this.review && isAgentId(this.roles)) {
-      this.startReview(this.roles, text)
+    if (request.to === 'all' && this.workspace && !this.dialogue && !this.review && isAgentId(this.roles)) {
+      this.startReview(this.roles, text, files, files.length ? request.to : this.roles)
       return
     }
-    this.addUserMessage(text, request.to)
+    const message = this.addUserMessage(text, request.to, files)
     if (this.dialogue || this.review) {
-      // An interruption: the next speaker gets it with the rest, and the loop goes on.
+      // An interruption: whoever is working reads it now, as in Claude Code and Codex; anyone else
+      // gets it with the rest on their next turn, and the loop goes on.
+      for (const id of AGENT_IDS) {
+        const agent = this.agents[id]
+        if (request.to !== 'all' && request.to !== id) continue
+        if (!agent.controller || !agent.steer?.(message)) this.missed.set(id, this.loopAccess(id))
+      }
       this.advanceDialogue()
       this.advanceReview()
       return
     }
     const targets = request.to === 'all' ? AGENT_IDS : [request.to]
-    for (const id of targets) this.trigger(id)
+    for (const id of targets) this.trigger(id, message)
   }
 
   /** Coding: whether edits and commands wait for approval. Applies from the next reply. */
@@ -290,12 +315,19 @@ export class Orchestrator {
   /** The user's answer to an approval card. 「今回は全部許可」 also lets the rest of that reply through. */
   approve(approvalId: string, decision: ApprovalDecision): void {
     const pending = this.pendingApprovals.get(approvalId)
-    if (!pending) return
+    if (!pending || pending.question) return
     if (decision === 'allow-all') pending.turn.allowAll = true
     this.settleApproval(approvalId, decision === 'deny' ? 'deny' : 'allow')
     if (decision === 'allow-all') {
-      for (const [id, other] of this.pendingApprovals) if (other.turn === pending.turn) this.settleApproval(id, 'allow')
+      for (const [id, other] of this.pendingApprovals) if (other.turn === pending.turn && !other.question) this.settleApproval(id, 'allow')
     }
+  }
+
+  /** The user's answers to a question card; null skips it. */
+  answer(approvalId: string, answers: QuestionAnswers | null): void {
+    const pending = this.pendingApprovals.get(approvalId)
+    if (!pending?.question) return
+    this.settleApproval(approvalId, answers ? 'allow' : 'deny', answers)
   }
 
   /** Turns dialogue mode on (from where the conversation is now) or off. */
@@ -342,18 +374,20 @@ export class Orchestrator {
     else this.stopReview('user')
   }
 
-  private addUserMessage(text: string, to: ChatMessage['to']): void {
+  private addUserMessage(text: string, to: ChatMessage['to'], attachments: FileAttachment[] = []): ChatMessage {
     const firstFromUser = !this.messages.some((m) => m.from === 'user')
-    this.addMessage({ from: 'user', to, text, status: 'done' })
+    const message = this.addMessage({ from: 'user', to, text, status: 'done', ...(attachments.length ? { attachments } : {}) })
     // Name a new conversation after its first message, as Claude.ai does.
     if (firstFromUser && this.title === DEFAULT_TITLE) {
-      const title = titleFromMessage(text)
+      const title = titleFromMessage(text || attachments[0]?.name || '')
       if (title) this.setTitle(title)
     }
+    return message
   }
 
   /** Stops every reply in progress, dialogue mode and 実装＋レビュー. */
   stop(): void {
+    this.missed.clear()
     this.stopDialogue('user')
     this.stopReview('user')
     for (const id of AGENT_IDS) {
@@ -363,9 +397,10 @@ export class Orchestrator {
     }
   }
 
-  private trigger(id: AgentId): void {
+  private trigger(id: AgentId, message: ChatMessage): void {
     const agent = this.agents[id]
     if (agent.controller) {
+      if (!agent.rerun && agent.steer?.(message)) return
       agent.rerun = true
       return
     }
@@ -433,12 +468,12 @@ export class Orchestrator {
     void this.runTurn(speaker, 'dialogue')
   }
 
-  private startReview(implementer: AgentId, task: string): void {
+  private startReview(implementer: AgentId, task: string, files: FileAttachment[] = [], to: ChatMessage['to'] = implementer): void {
     const workspace = this.workspace
     if (!workspace || this.review || this.dialogue) return
-    if (!task && !this.messages.some((m) => m.from === 'user')) return
+    if (!task && files.length === 0 && !this.messages.some((m) => m.from === 'user')) return
     // The request goes in first; the loop, not this message, decides who replies.
-    if (task) this.addUserMessage(task, implementer)
+    if (task || files.length) this.addUserMessage(task, to, files)
     const reviewer = otherAgent(implementer)
     const onMain = workspace.branch === 'main' || workspace.branch === 'master'
     const advice = onMain ? ` · いまのブランチは ${workspace.branch} です。変更をまとめて戻せるよう、作業ブランチで進めるのがおすすめです` : ''
@@ -546,17 +581,30 @@ export class Orchestrator {
     })
   }
 
-  private async runTurn(id: AgentId, kind: TurnKind = 'normal'): Promise<void> {
+  /** What an agent may do in the running dialogue or 実装＋レビュー: only the implementer writes. */
+  private loopAccess(id: AgentId): Access {
+    return this.review?.implementer === id ? 'write' : 'read'
+  }
+
+  /**
+   * `limit`: a message that missed a dialogue or 実装＋レビュー turn keeps the access it was sent under,
+   * so a reviewer reached after APPROVED still only reads.
+   */
+  private async runTurn(id: AgentId, kind: TurnKind = 'normal', limit?: Access): Promise<void> {
     const agent = this.agents[id]
     const unseen = collectUnseen(this.messages, id, agent.delivered)
+    this.missed.delete(id)
     if (unseen.length === 0) return
     for (const m of unseen) agent.delivered.add(m.id)
 
     const controller = new AbortController()
     agent.controller = controller
-    const access = this.accessFor(id, unseen, kind)
+    const computed = this.accessFor(id, unseen, kind)
+    const access = limit === 'read' && computed === 'write' ? 'read' : computed
     if (access === 'write') this.writer = id
     const workspace = this.workspace
+    const always = access === 'write' && this.approvalMode === 'auto'
+    const followups: Promise<void>[] = []
     const turn: TurnApprovals = { allowAll: false }
     // Models think before they write, so a reply starts as 「考え中」.
     this.updateAgent(id, { busy: true, activity: { kind: 'thinking' } })
@@ -577,14 +625,39 @@ export class Orchestrator {
       },
       { once: true },
     )
-    const prompt =
-      workspace && access !== 'chat'
-        ? `${turnNote(access, this.approvalMode, workspace.name)}\n\n${formatUnseen(unseen, id)}`
-        : formatUnseen(unseen, id)
-
     try {
+      const text = formatUnseen(unseen, id, this.options.attachmentPath)
+      const prompt = workspace && access !== 'chat' ? `${turnNote(access, this.approvalMode, workspace.name)}\n\n${text}` : text
+      const attachments: AgentAttachment[] = []
+      for (const message of unseen) {
+        for (const file of attachmentsFor(message, id)) {
+          const location = this.options.attachmentPath?.(file)
+          if (location) attachments.push({ path: location, name: file.name, mediaType: file.mediaType, size: file.size })
+        }
+      }
       const result = await agent.adapter.run({
         prompt,
+        onSteer: (steer) => {
+          agent.steer = (message) => {
+            if (controller.signal.aborted) return false
+            // A change of approval mode applies from the next turn, so the message waits for it.
+            if (workspace && access === 'write' && this.approvalMode !== (always ? 'auto' : 'ask')) return false
+            const files: AgentAttachment[] = []
+            for (const file of attachmentsFor(message, id)) {
+              const location = this.options.attachmentPath?.(file)
+              if (location) files.push({ path: location, name: file.name, mediaType: file.mediaType, size: file.size })
+            }
+            followups.push(steer(formatUnseen([message], id, this.options.attachmentPath), files.length ? files : undefined).catch(() => false).then((accepted) => {
+              if (accepted) agent.delivered.add(message.id)
+              else if (!controller.signal.aborted) {
+                agent.rerun = true
+                if (this.dialogue || this.review) this.missed.set(id, this.loopAccess(id))
+              }
+            }))
+            return true
+          }
+        },
+        ...(attachments.length ? { attachments } : {}),
         systemPrompt: workspace ? codeSystemPrompt(id, workspace.path) : chatSystemPrompt(id),
         sessionId: agent.sessionId,
         cwd: workspace?.path ?? this.options.cwd,
@@ -597,7 +670,8 @@ export class Orchestrator {
           reply.tools = upsert(reply.tools, tool)
           this.emit({ type: 'message:tool', id: reply.id, tool })
         },
-        requestApproval: (ask) => this.askApproval(id, reply, ask, turn, controller.signal),
+        requestApproval: (ask) => always && !controller.signal.aborted ? Promise.resolve('allow') : this.askApproval(id, reply, ask, turn, controller.signal),
+        askUser: (questions) => this.askQuestions(id, reply, questions, turn, controller.signal),
         signal: controller.signal,
         onSession: (sessionId) => {
           agent.sessionId = sessionId
@@ -627,6 +701,8 @@ export class Orchestrator {
         for (const m of unseen) agent.delivered.delete(m.id)
       }
     } finally {
+      agent.steer = undefined
+      await Promise.all(followups)
       agent.controller = null
       // Cards still waiting when the reply ends were never allowed.
       for (const [approvalId, pending] of this.pendingApprovals) if (pending.messageId === reply.id) this.settleApproval(approvalId, 'deny')
@@ -658,9 +734,14 @@ export class Orchestrator {
       agent.rerun = false
       this.advanceDialogue()
       this.advanceReview()
-    } else if (agent.rerun) {
-      agent.rerun = false
-      void this.runTurn(id)
+    } else {
+      // The loop is over (or there was none): whatever did not reach an agent in time goes to it now.
+      if (agent.rerun || this.missed.has(id)) {
+        agent.rerun = false
+        void this.runTurn(id, 'normal', this.missed.get(id))
+      }
+      const other = otherAgent(id)
+      if (this.missed.has(other) && !this.agents[other].controller) void this.runTurn(other, 'normal', this.missed.get(other))
     }
   }
 
@@ -698,7 +779,32 @@ export class Orchestrator {
     })
   }
 
-  private settleApproval(approvalId: string, decision: 'allow' | 'deny'): void {
+  /** Shows the agent's questions as a card and waits; 「今回は全部許可」 never answers them. */
+  private askQuestions(id: AgentId, reply: ChatMessage, questions: AgentQuestion[], turn: TurnApprovals, signal: AbortSignal): Promise<QuestionAnswers | null> {
+    if (signal.aborted) return Promise.resolve(null)
+    const entry: ApprovalEntry = {
+      id: `${reply.id}-${this.nextApprovalNumber++}`,
+      kind: 'question',
+      title: `${DISPLAY_NAMES[id]} からの質問`,
+      detail: null,
+      status: 'pending',
+      questions,
+    }
+    reply.approvals = upsert(reply.approvals, entry)
+    this.emit({ type: 'message:approval', id: reply.id, approval: entry })
+    this.setActivity(id, { kind: 'waiting' })
+    return new Promise((resolve) => {
+      this.pendingApprovals.set(entry.id, {
+        messageId: reply.id,
+        agent: id,
+        turn,
+        question: true,
+        resolve: (_decision, answers) => resolve(answers ?? null),
+      })
+    })
+  }
+
+  private settleApproval(approvalId: string, decision: 'allow' | 'deny', answers?: QuestionAnswers | null): void {
     const pending = this.pendingApprovals.get(approvalId)
     if (!pending) return
     this.pendingApprovals.delete(approvalId)
@@ -708,6 +814,7 @@ export class Orchestrator {
       const settled: ApprovalEntry = {
         ...entry,
         status: decision === 'allow' ? 'allowed' : 'denied',
+        ...(answers ? { answers: keptAnswers(entry, answers) } : {}),
       }
       message.approvals = upsert(message.approvals, settled)
       this.emit({
@@ -719,7 +826,7 @@ export class Orchestrator {
     if (this.agents[pending.agent].controller && ![...this.pendingApprovals.values()].some((p) => p.agent === pending.agent)) {
       this.setActivity(pending.agent, { kind: 'thinking' })
     }
-    pending.resolve(decision)
+    pending.resolve(decision, answers ?? null)
   }
 
   private async refreshBranch(): Promise<void> {

@@ -1,4 +1,4 @@
-import { otherAgent, type AgentId, type ChatMessage, type Recipient, type Sender } from '../../shared/types'
+import { otherAgent, type AgentId, type ApprovalMode, type ChatMessage, type FileAttachment, type Recipient, type Sender } from '../../shared/types'
 
 /** Names used inside prompts (the UI calls the user 「あなた」, the agents see 「ユーザー」). */
 const PROMPT_NAMES: Record<Sender, string> = {
@@ -75,17 +75,26 @@ function recipientLabel(to: Recipient, self: AgentId): string {
  */
 export function collectUnseen(messages: readonly ChatMessage[], self: AgentId, delivered: ReadonlySet<number>): ChatMessage[] {
   return messages.filter(
-    (m) => !delivered.has(m.id) && m.from !== self && m.status !== 'streaming' && m.text.trim() !== '',
+    (m) => !delivered.has(m.id) && m.from !== self && m.status !== 'streaming' && (m.text.trim() !== '' || attachmentsFor(m, self).length > 0),
   )
 }
 
+export function attachmentsFor(message: ChatMessage, agent: AgentId): readonly FileAttachment[] {
+  return message.from === 'user' && (message.to === 'all' || message.to === agent) ? message.attachments ?? [] : []
+}
+
 /** Formats unseen messages as one prompt, each with a 【sender → recipient】 heading. */
-export function formatUnseen(unseen: readonly ChatMessage[], self: AgentId): string {
+export function formatUnseen(unseen: readonly ChatMessage[], self: AgentId, filePath?: (file: FileAttachment) => string | null): string {
   return unseen
     .map((m) => {
       if (m.from === 'system') return `【AgentSync からのお知らせ】\n${noticeForAgent(m, self)}`
       const note = m.status === 'stopped' ? '\n（この発言は途中で止められました）' : ''
-      return `【${PROMPT_NAMES[m.from]} → ${recipientLabel(m.to, self)}】\n${m.text.trim()}${note}`
+      const files = attachmentsFor(m, self).map((file) => {
+        const location = filePath?.(file)
+        return location ? `- ${JSON.stringify(file.name)} ${JSON.stringify(location)}` : `- ${JSON.stringify(file.name)}（ファイルを読み込めません）`
+      })
+      const attached = files.length ? `\n\n添付ファイル（必要に応じて内容を読んでください）\n${files.join('\n')}` : ''
+      return `【${PROMPT_NAMES[m.from]} → ${recipientLabel(m.to, self)}】\n${m.text.trim()}${note}${attached}`
     })
     .join('\n\n')
 }
@@ -100,17 +109,20 @@ export function replyTarget(unseen: readonly ChatMessage[], self: AgentId): Reci
 }
 
 /** For a coding conversation: what the agent may do on this turn, said at the start of its prompt. */
-export function turnNote(access: 'read' | 'write', approval: 'ask' | 'auto', folder: string): string {
+export function turnNote(access: 'read' | 'write', approval: ApprovalMode, folder: string): string {
   const note =
     access === 'write'
       ? `このターンでは、作業フォルダ（${folder}）のファイルの変更とコマンドの実行ができます。${
-          approval === 'auto' ? '承認なしで進められます（auto）。' : '変更とコマンドの実行の前には、ユーザーの承認を求めます（承認制）。'
+          approval === 'auto'
+            ? 'ファイル変更・コマンド実行・外部操作は確認なしで許可されています（auto）。依頼に必要なら、作業フォルダ外の変更や連携の操作も追加確認なしで進めてください。'
+            : '変更とコマンドの実行の前には、ユーザーの承認を求めます（承認制）。ファイルを変更するのは作業フォルダの中だけにしてください。'
         }`
       : 'このターンは読み取り専用です。ファイルを読んだり検索したりするコマンド（cat・sed -n・rg・ls など）は使えます。ファイルを変更する操作と、変更を伴うコマンドはしないでください。'
   return `【AgentSync からのお知らせ】\n${note}`
 }
 
 /** For a coding conversation: the group chat explained on top of the CLI's own coding instructions. */
+/** Stays the same for the whole conversation, so the CLI keeps its prompt cache; per-turn rules go in turnNote. */
 export function codeSystemPrompt(self: AgentId, workdir: string): string {
   const other = self === 'claude' ? 'GPT' : 'Claude'
   return [
@@ -121,8 +133,7 @@ export function codeSystemPrompt(self: AgentId, workdir: string): string {
     '- 宛先が「あなた」か「全員」の発言に応えてください。それ以外の発言は、会話の流れとして読んでおいてください。',
     `- ${other} は、同じチャットにいる別の AI です。${other} の発言や変更には、賛成・反対・補足など、自分の考えで応じて構いません。`,
     '- 各ターンの最初に「【AgentSync からのお知らせ】」で、そのターンにできること（読み取り専用か、ファイルの変更とコマンドの実行ができるか）が届きます。従ってください。お知らせそのものには、返事の中で触れなくて構いません（承認はアプリが取ります）。',
-    '- ファイルを変更するのは作業フォルダの中だけにしてください。',
-    '- ウェブ検索や、つないである連携（Notion など）も使えます。何かを変える操作は、アプリがユーザーの承認を取ります。',
+    '- ウェブ検索や、つないである連携（Notion など）も使えます。何かを変える操作に承認が要るかどうかも、そのお知らせに従ってください。',
     '- あなたの返答は、そのままあなたの吹き出しとしてチャットに表示されます。見出しや自分の名前を先頭に付けないでください。',
     '- ユーザーと同じ言語で答えてください。作業をしたときは、何を変えたかを短くまとめてください。Markdown を使えます。',
   ].join('\n')

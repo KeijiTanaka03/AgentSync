@@ -6,8 +6,10 @@ directories:
   buildResources: build
 # Only the built app goes in (no sources, tests or plans). There are no runtime dependencies.
 files:
-  - out/**/*
+  - out/main/**/*
   - '!out/main/selftest-*.js' # development only
+  - out/preload/**/*
+  - out/renderer/**/*
   - package.json
 # Reuse the Electron installed by npm; packaging does not download another copy.
 electronDist: node_modules/electron/dist

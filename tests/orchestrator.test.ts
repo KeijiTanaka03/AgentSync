@@ -493,6 +493,31 @@ describe('Orchestrator in a coding conversation', () => {
     expect([claude.calls[1]!.access, gpt.calls[1]!.access]).toEqual(['read', 'read'])
   })
 
+  it('always-allow persists across replies without creating approval cards', async () => {
+    const { claude, orchestrator, messages } = coding()
+    orchestrator.setApprovalMode('auto')
+    for (const text of ['ビルドして', 'もう一度実行して']) {
+      orchestrator.send({ text, to: 'claude' })
+      await flush()
+      expect(claude.calls.at(-1)!.approval).toBe('auto')
+      await expect(claude.ask({ kind: 'command', title: '実行', detail: 'npm run build' })).resolves.toBe('allow')
+      await expect(claude.ask({ kind: 'other', title: '連携を変更', detail: null })).resolves.toBe('allow')
+      expect(messages().at(-1)!.approvals).toBeUndefined()
+      claude.reply('完了')
+      await flush()
+    }
+    expect(orchestrator.content().approvalMode).toBe('auto')
+    orchestrator.setApprovalMode('ask')
+    orchestrator.send({ text: '次は確認して', to: 'claude' })
+    await flush()
+    const answer = claude.ask({ kind: 'command', title: '確認', detail: null })
+    expect(messages().at(-1)!.approvals?.[0].status).toBe('pending')
+    orchestrator.approve(messages().at(-1)!.approvals![0].id, 'deny')
+    await expect(answer).resolves.toBe('deny')
+    claude.reply('了解')
+    await flush()
+  })
+
   it('shows approval cards and passes the answers to the agent; 「今回は全部許可」 covers the rest of the reply', async () => {
     const { claude, orchestrator, messages } = coding()
     orchestrator.send({ text: 'ビルドして', to: 'claude' })
@@ -716,5 +741,119 @@ describe('Orchestrator with an implementer chosen', () => {
     expect(gpt.calls).toHaveLength(1)
     expect(gpt.calls[0]!.access).toBe('write')
     expect(claude.calls).toHaveLength(0)
+  })
+})
+
+describe('Orchestrator: reaching an agent while it works', () => {
+  it('hands a message sent during 実装＋レビュー to the implementer at once, as Claude Code and Codex do', async () => {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({ adapters: { claude, gpt }, cwd: '/tmp/c', workdir: '/work/app', emit: () => {} })
+    orchestrator.setRoles('gpt')
+    orchestrator.send({ text: 'README を直して', to: 'all' })
+    await flush()
+    const steered: string[] = []
+    gpt.calls[0]!.onSteer?.(async (text) => {
+      steered.push(text)
+      return true
+    })
+    orchestrator.send({ text: 'テスト不要です', to: 'all' })
+    await flush()
+    expect(steered).toEqual(['【ユーザー → 全員】\nテスト不要です'])
+    expect(gpt.calls).toHaveLength(1)
+  })
+
+  it('shows an agent’s questions as a card, even in auto, and returns the answers', async () => {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({ adapters: { claude, gpt }, cwd: '/tmp/c', workdir: '/work/app', emit: () => {} })
+    orchestrator.setApprovalMode('auto')
+    orchestrator.send({ text: '直して', to: 'claude' })
+    await flush()
+    const answer = claude.calls[0]!.askUser([{ id: '0', header: '方針', question: 'どちらで？', options: [{ label: 'A', description: null }], multiSelect: false, allowOther: true }])
+    await flush()
+    const card = orchestrator.snapshot().state.messages.at(-1)!.approvals![0]!
+    expect(card).toMatchObject({ kind: 'question', status: 'pending' })
+    orchestrator.approve(card.id, 'allow-all') // 「今回は全部許可」 never answers a question
+    orchestrator.answer(card.id, { '0': ['A'] })
+    await expect(answer).resolves.toEqual({ '0': ['A'] })
+    expect(orchestrator.snapshot().state.messages.at(-1)!.approvals![0]).toMatchObject({ status: 'allowed', answers: { '0': ['A'] } })
+  })
+})
+
+describe('Orchestrator: follow-ups at the end of 実装＋レビュー', () => {
+  it('hands a message that missed the reviewer’s turn to it after APPROVED ends the cycle', async () => {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({ adapters: { claude, gpt }, cwd: '/tmp/c', workdir: '/work/app', emit: () => {} })
+    orchestrator.setRoles('gpt')
+    orchestrator.send({ text: 'README を直して', to: 'all' })
+    await flush()
+    gpt.reply('直しました')
+    await flush()
+    expect(claude.calls).toHaveLength(1) // the reviewer, which offers no way to steer
+    orchestrator.send({ text: 'ついでに誤字も見て', to: 'claude' })
+    claude.reply('APPROVED')
+    await flush()
+    expect(orchestrator.inReview).toBe(false)
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]!.prompt).toContain('ついでに誤字も見て')
+  })
+})
+
+describe('Orchestrator: secret answers', () => {
+  it('hands a secret answer to the agent but keeps it out of the conversation', async () => {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({ adapters: { claude, gpt }, cwd: '/tmp/c', emit: () => {} })
+    orchestrator.send({ text: 'ログインして', to: 'gpt' })
+    await flush()
+    const answer = gpt.calls[0]!.askUser([
+      { id: 'user', header: '', question: 'ユーザー名', options: [], multiSelect: false, allowOther: true },
+      { id: 'token', header: '', question: 'トークン', options: [], multiSelect: false, allowOther: true, secret: true },
+    ])
+    await flush()
+    const card = orchestrator.snapshot().state.messages.at(-1)!.approvals![0]!
+    orchestrator.answer(card.id, { user: ['keiji'], token: ['s3cret'] })
+    await expect(answer).resolves.toEqual({ user: ['keiji'], token: ['s3cret'] })
+    const settled = orchestrator.snapshot().state.messages.at(-1)!.approvals![0]!
+    expect(settled.answers).toEqual({ user: ['keiji'] })
+    expect(JSON.stringify(orchestrator.content())).not.toContain('s3cret')
+  })
+})
+
+describe('Orchestrator: follow-ups after 実装＋レビュー keep their access', () => {
+  const start = async () => {
+    const claude = new FakeAgent('claude')
+    const gpt = new FakeAgent('gpt')
+    const orchestrator = new Orchestrator({ adapters: { claude, gpt }, cwd: '/tmp/c', workdir: '/work/app', emit: () => {} })
+    orchestrator.setApprovalMode('auto')
+    orchestrator.setRoles('gpt')
+    orchestrator.send({ text: 'README を直して', to: 'all' })
+    await flush()
+    gpt.reply('直しました')
+    await flush()
+    return { claude, gpt, orchestrator }
+  }
+
+  it('keeps a reviewer reached after APPROVED read-only', async () => {
+    const { claude, orchestrator } = await start()
+    orchestrator.send({ text: 'テスト不要です', to: 'claude' })
+    claude.reply('APPROVED')
+    await flush()
+    expect(orchestrator.inReview).toBe(false)
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]!.access).toBe('read')
+  })
+
+  it('hands a message for the waiting implementer to it once APPROVED ends the cycle', async () => {
+    const { claude, gpt, orchestrator } = await start()
+    orchestrator.send({ text: 'CHANGELOG も更新して', to: 'gpt' })
+    claude.reply('APPROVED')
+    await flush()
+    expect(orchestrator.inReview).toBe(false)
+    expect(gpt.calls).toHaveLength(2)
+    expect(gpt.calls[1]!.prompt).toContain('CHANGELOG も更新して')
+    expect(gpt.calls[1]!.access).toBe('write')
   })
 })

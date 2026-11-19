@@ -3,8 +3,10 @@ import type { ConversationKind, ConversationSummary } from '../../../shared/type
 import { BrandMark, ChatIcon, CodeIcon, FolderIcon, LinkIcon, LoopIcon, MeterIcon, MoreIcon, PencilIcon, PinIcon, PlusIcon, TrashIcon } from './icons'
 import { PopupMenu } from './PopupMenu'
 import { TitleInput } from './TitleInput'
+import { UsageSummary } from './UsageSummary'
 
 interface SidebarProps {
+  unread: Record<string, number>
   conversations: ConversationSummary[]
   activeId: string | null
   /** The list shown: chats or coding conversations. */
@@ -43,7 +45,7 @@ function groupOf(iso: string, now: Date): (typeof GROUPS)[number] {
   return 'それ以前'
 }
 
-export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, onCreate, onCreateCode, onRename, onPin, onDelete, onConnections, onUsage }: SidebarProps) {
+export function Sidebar({ conversations: all, unread, activeId, mode, onMode, onSelect, onCreate, onCreateCode, onRename, onPin, onDelete, onConnections, onUsage }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const conversations = all.filter((c) => c.kind === mode)
   const [menu, setMenu] = useState<MenuState | null>(null)
@@ -73,12 +75,16 @@ export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, 
         AgentSync
       </div>
       <div className="mode-switch" role="tablist" aria-label="会話の種類">
-        {(['chat', 'code'] as const).map((kind) => (
-          <button key={kind} type="button" role="tab" aria-selected={mode === kind} onClick={() => onMode(kind)}>
-            {kind === 'chat' ? <ChatIcon size={15} /> : <CodeIcon size={15} />}
-            {kind === 'chat' ? 'チャット' : 'コード'}
-          </button>
-        ))}
+        {(['chat', 'code'] as const).map((kind) => {
+          const count = all.reduce((sum, conversation) => sum + (conversation.kind === kind ? unread[conversation.id] ?? 0 : 0), 0)
+          return (
+            <button key={kind} type="button" role="tab" aria-selected={mode === kind} onClick={() => onMode(kind)}>
+              {kind === 'chat' ? <ChatIcon size={15} /> : <CodeIcon size={15} />}
+              {kind === 'chat' ? 'チャット' : 'コード'}
+              <UnreadBadge count={count} />
+            </button>
+          )
+        })}
       </div>
       {mode === 'chat' ? (
         <button type="button" className="new-conversation" onClick={onCreate}>
@@ -134,7 +140,16 @@ export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, 
                           onClick={() => onSelect(id)}
                           onDoubleClick={() => setEditingId(id)}
                         >
-                          <span className="conversation-title">{title}</span>
+                          <span className="conversation-label">
+                            <span className="conversation-title">{title}</span>
+                            {conversation.folderName && (
+                              <span className="conversation-folder" title={conversation.workdir}>
+                                <FolderIcon size={13} />
+                                <span>{conversation.folderName}</span>
+                              </span>
+                            )}
+                          </span>
+                          <UnreadBadge count={unread[id] ?? 0} />
                           {conversation.dialogue || conversation.review ? (
                             <span
                               className="conversation-dialogue"
@@ -170,6 +185,7 @@ export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, 
           </section>
         ))}
       </div>
+      <UsageSummary onDetails={onUsage} />
       <div className="sidebar-footer">
         <button type="button" onClick={onConnections}>
           <LinkIcon size={15} />
@@ -231,4 +247,8 @@ export function Sidebar({ conversations: all, activeId, mode, onMode, onSelect, 
       )}
     </nav>
   )
+}
+
+function UnreadBadge({ count }: { count: number }) {
+  return count > 0 ? <span className="unread-badge" aria-label={`未読 ${count} 件`}>{count > 99 ? '99+' : count}</span> : null
 }

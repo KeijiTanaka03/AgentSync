@@ -1,7 +1,7 @@
 import path from 'node:path'
-import { appUpdateEnabled, APP_UPDATE_TARGET } from './appUpdate'
-import type { AgentActivity, AgentChoices, ToolLogEntry } from '../../shared/types'
-import type { Access, AgentAdapter, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
+import type { AgentActivity, AgentChoices, ApprovalMode, ToolLogEntry } from '../../shared/types'
+import type { Access, AgentAdapter, AgentAttachment, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
+import { isVerifiedCodexRead } from './connectorReads'
 import { RpcError, type RpcConnection } from './jsonRpc'
 
 // The subset of the `codex app-server` protocol this adapter uses.
@@ -44,8 +44,8 @@ interface CodexConfig {
 }
 
 /** Every connector asks before each tool call, so AgentSync can decide (see the approval handler). */
-export function connectorOverrides(servers: readonly string[]): Record<string, string> {
-  return Object.fromEntries(servers.filter((name) => /^[\w-]+$/.test(name)).map((name) => [`mcp_servers.${name}.default_tools_approval_mode`, 'prompt']))
+export function connectorOverrides(servers: readonly string[], always = false): Record<string, string> {
+  return Object.fromEntries(servers.filter((name) => /^[\w-]+$/.test(name)).map((name) => [`mcp_servers.${name}.default_tools_approval_mode`, always ? 'approve' : 'prompt']))
 }
 
 /** The model and effort a thread runs at. Null: the CLI's own setting. */
@@ -85,17 +85,18 @@ const MAX_TITLE = 200
 const MAX_DETAIL = 4_000
 
 /** How a Codex thread may touch the project for an access level. */
-export function codexPolicy(access: Access, approval: 'ask' | 'auto', allowAppUpdate = false) {
+export function codexPolicy(access: Access, approval: ApprovalMode) {
   if (access !== 'write') {
     // 「on-request」, not 「never」: with 「never」 Codex refuses connector calls set to ask first by itself.
-    return { sandbox: 'read-only', approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+    return { sandbox: 'read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
   }
+  if (approval === 'auto') return { sandbox: 'danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' } }
   return {
     sandbox: 'workspace-write',
     // 「untrusted」 asks before every command that is not plainly safe and before every file change;
-    // 「on-request」 is Codex's auto mode, which asks only when it wants to go beyond the sandbox.
-    approvalPolicy: approval === 'auto' ? 'on-request' : 'untrusted',
-    sandboxPolicy: { type: 'workspaceWrite', writableRoots: approval === 'auto' && allowAppUpdate && process.platform === 'darwin' ? [APP_UPDATE_TARGET] : [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+    approvalPolicy: 'untrusted',
+    approvalsReviewer: 'user',
+    sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
   }
 }
 
@@ -116,6 +117,14 @@ function relativeTo(cwd: string, file: unknown): string {
   const text = typeof file === 'string' ? file : ''
   const relative = path.isAbsolute(text) ? path.relative(cwd, text) : text
   return relative && !relative.startsWith('..') ? relative : text
+}
+
+/** A user message as Codex builds it: images attached as images; other files by path in the text. */
+function codexInput(text: string, attachments: AgentAttachment[] | undefined): Json[] {
+  return [
+    { type: 'text', text, text_elements: [] },
+    ...(attachments ?? []).filter((file) => file.mediaType?.startsWith('image/')).map((file) => ({ type: 'localImage', path: file.path })),
+  ]
 }
 
 /** How a Codex turn item is shown in the work log (null for messages and reasoning). */
@@ -205,6 +214,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly id = 'gpt' as const
   private connection: Promise<RpcConnection> | null = null
   private readonly loadedThreads = new Set<string>()
+  private readonly threadAlways = new Map<string, boolean>()
   private readonly threadListeners = new Map<string, ThreadListener>()
   private readonly approvalHandlers = new Map<string, ApprovalHandler>()
   /**
@@ -223,15 +233,17 @@ export class CodexAdapter implements AgentAdapter {
     if (request.signal.aborted) return { text: '', status: 'stopped' }
 
     // Chat: read-only in an empty folder, never asking. Coding: the project folder, as the access allows.
-    const policy = codexPolicy(request.access, request.approval, appUpdateEnabled(request.cwd))
+    const policy = codexPolicy(request.access, request.approval)
     const { mcpServers } = await this.readConfig(rpc)
+    const always = request.access === 'write' && request.approval === 'auto'
     const threadSettings = {
       cwd: request.cwd,
       sandbox: policy.sandbox,
       approvalPolicy: policy.approvalPolicy,
+      approvalsReviewer: policy.approvalsReviewer,
       developerInstructions: request.systemPrompt,
       ...(request.model ? { model: request.model } : {}),
-      ...(mcpServers.length > 0 ? { config: connectorOverrides(mcpServers) } : {}),
+      ...(mcpServers.length > 0 ? { config: connectorOverrides(mcpServers, always) } : {}),
     }
 
     let threadId = request.sessionId
@@ -242,12 +254,13 @@ export class CodexAdapter implements AgentAdapter {
       this.threadSettings.set(threadId, { model: request.model, effort: null })
       request.onSession(threadId)
       request.onModel(started.model)
-    } else if (!this.loadedThreads.has(threadId)) {
+    } else if (!this.loadedThreads.has(threadId) || this.threadAlways.get(threadId) !== always) {
       const resumed = await rpc.request<ThreadResponse>('thread/resume', { threadId, ...threadSettings, excludeTurns: true })
       this.loadedThreads.add(threadId)
       request.onModel(resumed.model)
     }
 
+    this.threadAlways.set(threadId, always)
     const overrides = await this.turnOverrides(threadId, request)
     return this.runTurn(rpc, threadId, request, overrides)
   }
@@ -326,6 +339,7 @@ export class CodexAdapter implements AgentAdapter {
   /** What a new app-server process will not know: loaded threads and what was read from Codex. */
   private forgetProcess(): void {
     this.loadedThreads.clear()
+    this.threadAlways.clear()
     this.threadSettings.clear()
     this.models = null
     this.config = null
@@ -385,18 +399,25 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private runTurn(rpc: RpcConnection, threadId: string, request: AgentRunRequest, overrides: TurnOverrides): Promise<AgentRunResult> {
+    const policy = codexPolicy(request.access, request.approval)
     return new Promise<AgentRunResult>((resolve, reject) => {
       let turnId: string | null = null
+      let finished = false
       let lastItemId: string | null = null
       let lastError: string | null = null
       // Agent message items in arrival order; a turn may contain more than one.
       const items = new Map<string, string>()
+      // Codex marks what it says while working as commentary; like Codex itself, that is not the answer.
+      // It goes to the work log. Messages without a phase (older models) stay in the reply.
+      const commentary = new Set<string>()
+      const isCommentary = (item: Json) => item.type === 'agentMessage' && item.phase === 'commentary'
       const fullText = () => [...items.values()].filter((t) => t !== '').join('\n\n')
 
       const interrupt = () => {
         if (turnId) void rpc.request('turn/interrupt', { threadId, turnId }).catch(() => {})
       }
       const finish = () => {
+        finished = true
         this.threadListeners.delete(threadId)
         this.approvalHandlers.delete(threadId)
         request.signal.removeEventListener('abort', interrupt)
@@ -411,10 +432,37 @@ export class CodexAdapter implements AgentAdapter {
       }
       this.approvalHandlers.set(threadId, async (method, params) => {
         let ask: ApprovalRequest | null = null
+        if (method === 'item/tool/requestUserInput') {
+          const questions = (Array.isArray(params.questions) ? (params.questions as Json[]) : []).map((q, index) => ({
+            id: typeof q.id === 'string' ? q.id : String(index),
+            header: String(q.header ?? ''),
+            question: String(q.question ?? ''),
+            options: (Array.isArray(q.options) ? (q.options as Json[]) : []).map((o) => ({
+              label: String(o.label ?? ''),
+              description: typeof o.description === 'string' && o.description !== '' ? o.description : null,
+            })),
+            multiSelect: false,
+            allowOther: q.isOther === true || !Array.isArray(q.options) || q.options.length === 0,
+            ...(q.isSecret === true ? { secret: true } : {}),
+          }))
+          const answers = questions.length ? await request.askUser(questions) : null
+          return { answers: Object.fromEntries(Object.entries(answers ?? {}).map(([id, chosen]) => [id, { answers: chosen ?? [] }])) }
+        }
         if (method === 'mcpServer/elicitation/request') {
           // A connector's tool call (with every connector set to ask first). Reading goes ahead.
           const meta = (typeof params._meta === 'object' && params._meta !== null ? params._meta : {}) as Json
           if (meta.codex_approval_kind !== 'mcp_tool_call') return { action: 'decline' }
+          // A read-only turn: only connector reads checked to have no side effects, never asked about (an
+          // approval would let a change through). A server's own read-only hint is not enough there.
+          if (request.access === 'read') {
+            // The connection this thread really uses (project settings may point the same name elsewhere).
+            const serverName = String(params.serverName ?? '')
+            const status = await rpc
+              .request<{ data?: { name?: unknown; httpOrigin?: unknown }[] }>('mcpServerStatus/list', { threadId, serverName })
+              .catch(() => null)
+            const origin = status?.data?.find((s) => s.name === serverName)?.httpOrigin
+            return isVerifiedCodexRead(typeof origin === 'string' ? origin : null, String(meta.tool_name ?? '')) ? { action: 'accept', content: {} } : { action: 'decline' }
+          }
           const annotations = (typeof meta.tool_annotations === 'object' && meta.tool_annotations !== null ? meta.tool_annotations : {}) as Json
           if (annotations.readOnlyHint === true) return { action: 'accept', content: {} }
           const tool = String(meta.tool_title ?? meta.tool_name ?? '')
@@ -449,7 +497,7 @@ export class CodexAdapter implements AgentAdapter {
           case 'item/agentMessage/delta': {
             const itemId = String(params.itemId)
             const delta = typeof params.delta === 'string' ? params.delta : ''
-            if (!delta) return
+            if (!delta || commentary.has(itemId)) return
             const separator = lastItemId !== null && lastItemId !== itemId && fullText() !== '' ? '\n\n' : ''
             lastItemId = itemId
             items.set(itemId, (items.get(itemId) ?? '') + delta)
@@ -461,13 +509,19 @@ export class CodexAdapter implements AgentAdapter {
             const activity = item ? itemActivity(item) : null
             if (activity) request.onActivity(activity)
             if (item?.type === 'fileChange' && typeof item.id === 'string') fileChanges.set(item.id, item)
+            if (item && isCommentary(item) && typeof item.id === 'string') commentary.add(item.id)
             if (item) report(item, false)
             return
           }
           case 'item/completed': {
             const item = params.item as Json | undefined
             if (item) report(item, true)
-            if (item?.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string') {
+            if (item && isCommentary(item) && typeof item.id === 'string') {
+              commentary.add(item.id)
+              items.delete(item.id)
+              const note = typeof item.text === 'string' ? item.text.trim() : ''
+              if (note) request.onTool({ id: item.id, kind: 'note', title: clip(note), status: 'done' })
+            } else if (item?.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string') {
               items.set(item.id, item.text)
             } else if (item) {
               // A search or tool call has finished; Codex thinks about the result next.
@@ -503,16 +557,21 @@ export class CodexAdapter implements AgentAdapter {
       rpc
         .request<TurnStartResponse>('turn/start', {
           threadId,
-          input: [{ type: 'text', text: request.prompt, text_elements: [] }],
+          input: codexInput(request.prompt, request.attachments),
           // A coding thread changes between reading and writing from turn to turn.
           ...(request.access === 'chat'
             ? {}
-            : { approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy }),
+            : { approvalPolicy: policy.approvalPolicy, approvalsReviewer: policy.approvalsReviewer, sandboxPolicy: policy.sandboxPolicy }),
           ...(overrides.model ? { model: overrides.model } : {}),
           ...(overrides.effort ? { effort: overrides.effort } : {}),
         })
         .then((started) => {
           turnId = started.turn.id
+          if (!finished) request.onSteer?.(async (text, attachments) => {
+            if (finished || request.signal.aborted || !turnId) return false
+            await rpc.request('turn/steer', { threadId, expectedTurnId: turnId, input: codexInput(text, attachments) })
+            return true
+          })
           // The thread now runs at the chosen settings (null: the CLI's own ones).
           if (overrides.complete) this.threadSettings.set(threadId, { model: request.model, effort: request.effort })
           if (overrides.model) request.onModel(overrides.model)

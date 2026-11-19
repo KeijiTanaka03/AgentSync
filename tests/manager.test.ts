@@ -42,6 +42,44 @@ function setup(directory = mkdtempSync(path.join(tmpdir(), 'agentsync-manager-')
 }
 
 describe('ChatManager', () => {
+  it('sends files without text, saves their bytes across restarts, and removes them with the conversation', async () => {
+    const first = setup()
+    const id = first.manager.create()
+    const name = '依頼書.txt'
+    const bytes = Buffer.from('添付の本文')
+    first.manager.send(id, { text: '', to: 'claude' }, [{ name, bytes }])
+    const sent = first.claude.calls[0]!
+    expect(sent.prompt).toContain(name)
+    expect(sent.attachments).toHaveLength(1)
+    const storedPath = sent.attachments![0]!.path
+    expect(readFileSync(storedPath)).toEqual(bytes)
+    const file = first.manager.snapshot(id).state.messages[0]!.attachments![0]!
+    first.claude.reply('受け取りました')
+    await settle()
+    first.manager.dispose()
+
+    const reopened = setup(first.directory)
+    expect(reopened.manager.snapshot(id).state.messages[0]).toMatchObject({ text: '', attachments: [{ id: file.id, name }] })
+    expect(reopened.manager.attachmentPath(id, file.id)).toBe(storedPath)
+    reopened.manager.send(id, { text: 'hello', to: 'gpt' })
+    expect(reopened.gpt.calls[0]!.attachments).toBeUndefined()
+    expect(reopened.gpt.calls[0]!.prompt).not.toContain(name)
+    reopened.manager.delete(id)
+    expect(existsSync(storedPath)).toBe(false)
+    reopened.manager.dispose()
+  })
+
+  it('passes a shared file to both agents and rejects malformed uploads before starting a reply', () => {
+    const { manager, claude, gpt } = setup()
+    const id = manager.create()
+    expect(() => manager.send(id, { text: '', to: 'all' }, [{ name: 'a.txt', bytes: 'not bytes' }])).toThrow('添付ファイルの指定')
+    expect(manager.snapshot(id).state.messages).toEqual([])
+    manager.send(id, { text: '読んで', to: 'all' }, [{ name: 'a.txt', bytes: new Uint8Array([1]) }])
+    expect(gpt.calls[0]?.attachments).toEqual(claude.calls[0]?.attachments)
+    expect(gpt.calls[0]?.attachments).toHaveLength(1)
+    manager.dispose()
+  })
+
   it('writes a new conversation only once it has a message', async () => {
     const { manager, claude, file, read, lists } = setup()
     const id = manager.create()
@@ -230,7 +268,8 @@ describe('ChatManager', () => {
   it('opens coding conversations in their folder, never reusing them as chats', async () => {
     const { manager, claude, read } = setup()
     const code = manager.createCode('/work/app')
-    expect(manager.list()[0]).toMatchObject({ id: code, kind: 'code' })
+    expect(manager.list()[0]).toMatchObject({ id: code, kind: 'code', title: '新しい会話', folderName: 'app', workdir: '/work/app' })
+    expect(manager.snapshot(code).state.title).toBe('新しい会話')
     expect(manager.snapshot(code).state.workspace).toMatchObject({ path: '/work/app', name: 'app' })
     expect(manager.create()).not.toBe(code)
 
@@ -238,6 +277,21 @@ describe('ChatManager', () => {
     manager.send(code, { text: '直して', to: 'claude' })
     claude.reply('直しました')
     await settle()
-    expect(read(code)).toMatchObject({ kind: 'code', workdir: '/work/app', approvalMode: 'auto' })
+    expect(read(code)).toMatchObject({ kind: 'code', workdir: '/work/app', approvalMode: 'auto', title: '直して' })
   })
+  it('allows coding titles to be renamed and preserves them after reopening', async () => {
+    const { manager, directory, claude, read } = setup()
+    const code = manager.createCode('/work/新しい会話/')
+    manager.send(code, { text: 'READMEを見直す', to: 'claude' })
+    claude.reply('了解')
+    await settle()
+    expect(manager.snapshot(code).state.title).toBe('READMEを見直す')
+    manager.rename(code, '好きなタイトル')
+    await settle()
+    expect(manager.list().find((item) => item.id === code)?.title).toBe('好きなタイトル')
+    expect(read(code).title).toBe('好きなタイトル')
+    const reopened = setup(directory)
+    expect(reopened.manager.snapshot(code).state.title).toBe('好きなタイトル')
+  })
+
 })

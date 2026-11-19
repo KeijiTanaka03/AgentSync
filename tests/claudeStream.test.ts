@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ClaudeAdapter, describePermission, parseModelList, writesOutside } from '../src/main/agents/claude'
+import { ClaudeAdapter, MCP_ASK_SETTINGS, describePermission, parseModelList, writesOutside } from '../src/main/agents/claude'
 import { ClaudeStreamParser, describeClaudeTool, isReadOnlyTool } from '../src/main/agents/claudeStream'
 import type { AgentRunRequest, ApprovalRequest } from '../src/main/agents/types'
 import type { ToolLogEntry } from '../src/shared/types'
@@ -106,6 +106,8 @@ describe('ClaudeAdapter.buildArgs', () => {
       'host',
       '--permission-prompt-tool',
       'stdio',
+      '--settings',
+      JSON.stringify(MCP_ASK_SETTINGS),
       '--model',
       'haiku',
       '--effort',
@@ -116,6 +118,15 @@ describe('ClaudeAdapter.buildArgs', () => {
     // Nothing of Claude Code is cut off: no tool list, no MCP restriction.
     expect(args).not.toContain('--tools')
     expect(args).not.toContain('--strict-mcp-config')
+  })
+
+  it('launches a read-only turn exactly like a writing one, so the prompt cache survives the switch', () => {
+    const base = { systemPrompt: 'SYS', model: null, effort: null, sessionId: null, approval: 'auto' } as const
+    const write = ClaudeAdapter.buildArgs({ ...base, access: 'write' })
+    expect(ClaudeAdapter.buildArgs({ ...base, access: 'read' })).toEqual(write)
+    expect(write).not.toContain('--tools')
+    // Connector calls come to us on every turn, whatever the user's settings allow.
+    expect(write.slice(write.indexOf('--settings'), write.indexOf('--settings') + 2)).toEqual(['--settings', JSON.stringify(MCP_ASK_SETTINGS)])
   })
 
   it('leaves out model, effort and resume when not set', () => {
@@ -176,14 +187,16 @@ describe('Claude in a coding conversation', () => {
 
   it('works as Claude Code does, reading only or asking us before changes', () => {
     const read = ClaudeAdapter.buildArgs({ ...base, access: 'read', approval: 'ask' })
-    expect(read).toEqual(expect.arrayContaining(['--append-system-prompt', 'SYS', '--tools', 'Read,Glob,Grep,WebSearch,WebFetch', '--permission-prompts', 'host']))
+    expect(read).toEqual(expect.arrayContaining(['--append-system-prompt', 'SYS', '--permission-prompts', 'host']))
+    // Read-only turns keep Claude Code's tools; what it asks about is refused by approveClaudeTool.
+    expect(read).not.toContain('--tools')
     expect(read).not.toContain('--system-prompt')
 
     const ask = ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'ask' })
     expect(ask.join(' ')).toContain('--input-format stream-json --permission-mode manual --permission-prompts host --permission-prompt-tool stdio')
     expect(ask).not.toContain('--tools')
-    expect(ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'auto' }).join(' ')).toContain('--permission-mode auto')
-    // auto is for changing the project; elsewhere Claude Code asks us as usual.
+    // auto is allowed by the host, so the launch arguments stay the same and the prompt cache survives a switch.
+    expect(ClaudeAdapter.buildArgs({ ...base, access: 'write', approval: 'auto' }).join(' ')).toContain('--permission-mode manual')
     expect(ClaudeAdapter.buildArgs({ ...base, access: 'chat', approval: 'auto' }).join(' ')).toContain('--permission-mode manual')
   })
 
@@ -239,6 +252,7 @@ describe('Claude in a coding conversation', () => {
     const request = (answer: 'allow' | 'deny'): AgentRunRequest => ({
       prompt: 'build を消して',
       systemPrompt: 'SYS',
+      askUser: async () => null,
       sessionId: null,
       cwd: folder,
       model: null,
@@ -281,6 +295,8 @@ describe('Claude with connectors (Notion, …)', () => {
       [
         '#!/bin/sh',
         'read message',
+        // Claude Code says at start where its connectors come from.
+        `printf '%s\\n' '${JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', mcp_servers: [{ name: 'claude.ai Notion', status: 'connected', source: 'claudeai' }] })}'`,
         'out=""',
         ...steps.flatMap((tool, i) => [
           `printf '%s\\n' '${ask(`r${i}`, tool)}'`,
@@ -298,6 +314,7 @@ describe('Claude with connectors (Notion, …)', () => {
       const result = adapter.run({
         prompt: 'Notion に応募先をまとめて',
         systemPrompt: 'SYS',
+        askUser: async () => null,
         sessionId: null,
         cwd: folder,
         model: null,
@@ -321,9 +338,44 @@ describe('Claude with connectors (Notion, …)', () => {
     await expect(chat.result).resolves.toEqual({ text: '++++', status: 'done' })
     expect(chat.asked.map((a) => a.title)).toEqual(['Notion を操作: notion-create-pages', 'コマンドを実行: '])
     await expect(run('chat', 'deny').result).resolves.toEqual({ text: '++--', status: 'done' })
-    // A read-only turn: the command is refused without asking; the connector change is still the user's call.
+    // A read-only turn: only a connector read checked to have no side effects goes ahead; a connector change
+    // and a command are refused without asking, since an approval would let them change things.
     const read = run('read', 'allow')
-    await expect(read.result).resolves.toEqual({ text: '+++-', status: 'done' })
-    expect(read.asked.map((a) => a.title)).toEqual(['Notion を操作: notion-create-pages'])
+    await expect(read.result).resolves.toEqual({ text: '++--', status: 'done' })
+    expect(read.asked).toEqual([])
+  })
+})
+
+describe('Claude Code questions (AskUserQuestion)', () => {
+  it('turns the questions into a card and the answers into the input Claude Code expects', async () => {
+    const { askedQuestions, answeredInput } = await import('../src/main/agents/claude')
+    const input = { questions: [{ question: 'どれにする？', header: '方式', multiSelect: true, options: [{ label: 'A', description: '速い' }, { label: 'B', description: '' }] }] }
+    const questions = askedQuestions(input)
+    expect(questions).toEqual([{ id: '0', header: '方式', question: 'どれにする？', options: [{ label: 'A', description: '速い' }, { label: 'B', description: null }], multiSelect: true, allowOther: true }])
+    expect(answeredInput(input, questions, { '0': ['A', 'B'] })).toEqual({ ...input, answers: { 'どれにする？': 'A, B' } })
+  })
+})
+
+describe('Claude Code permissions on a read-only turn', () => {
+  it('asks before a read outside the project, and refuses a command or an edit without asking', async () => {
+    const { approveClaudeTool } = await import('../src/main/agents/claude')
+    const asked: string[] = []
+    const request = {
+      access: 'read', approval: 'auto', cwd: '/work/app',
+      requestApproval: async (ask: { title: string }) => { asked.push(ask.title); return 'allow' as const },
+      askUser: async () => null,
+    } as unknown as Parameters<typeof approveClaudeTool>[0]
+    await expect(approveClaudeTool(request, 'Read', { file_path: '/etc/hosts' })).resolves.toBe(true)
+    // A connector tool whose name sounds like reading is not enough on a read-only turn.
+    const claudeAi = new Map([['claude_ai_Notion', 'claudeai']])
+    await expect(approveClaudeTool(request, 'mcp__claude_ai_Notion__notion-search', { query: 'a' }, claudeAi)).resolves.toBe(true)
+    // The same name from a provider the running Claude Code did not report as claude.ai is not trusted.
+    await expect(approveClaudeTool(request, 'mcp__claude_ai_Notion__notion-search', { query: 'a' }, new Map())).resolves.toContain('読み取り専用')
+    await expect(approveClaudeTool(request, 'mcp__other__get_and_delete', {}, claudeAi)).resolves.toContain('読み取り専用')
+    await expect(approveClaudeTool(request, 'Bash', { command: 'touch x' })).resolves.toBe('このターンは読み取り専用です。')
+    // A command Claude Code asks about could write, so none goes ahead on a read-only turn.
+    await expect(approveClaudeTool(request, 'Bash', { command: 'cat a.ts' })).resolves.toBe('このターンは読み取り専用です。')
+    await expect(approveClaudeTool(request, 'Edit', { file_path: 'a.ts' })).resolves.toBe('このターンは読み取り専用です。')
+    expect(asked).toHaveLength(1)
   })
 })

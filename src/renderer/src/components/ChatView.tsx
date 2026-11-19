@@ -11,16 +11,18 @@ import {
   type ReviewState,
  
   type Roles,
+  type SendTarget,
 } from '../../../shared/types'
 import { errorMessage } from '../errors'
 import { useChat } from '../useChat'
-import { Composer } from './Composer'
+import { Composer, type ComposerHandle } from './Composer'
 import { Header } from './Header'
 import { CodeIcon, LoopIcon } from './icons'
 import { Timeline } from './Timeline'
 
 /** One open conversation. Mounted again (with a fresh state) for each conversation. */
-export function ChatView({ conversationId, active = true, independentScroll = false, initialScrollTop }: { conversationId: string; active?: boolean; independentScroll?: boolean; initialScrollTop?: number }) {
+export function ChatView({ conversationId, recipient, onRecipient, active = true, independentScroll = false, initialScrollTop }: { conversationId: string; recipient: SendTarget; onRecipient(to: SendTarget): void; active?: boolean; independentScroll?: boolean; initialScrollTop?: number }) {
+  const composer = useRef<ComposerHandle>(null)
   const { state, loadError, send, stop } = useChat(conversationId)
   const loadChoices = useCallback((agent: AgentId) => window.agentsync.agentChoices(conversationId, agent), [conversationId])
 
@@ -73,12 +75,23 @@ export function ChatView({ conversationId, active = true, independentScroll = fa
   const busy = AGENT_IDS.some((id) => state.agents[id].busy)
 
   return (
-    <main className="chat">
+    <main
+      className="chat"
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.files.length) return
+        event.preventDefault()
+        composer.current?.addDroppedFiles(Array.from(event.dataTransfer.files))
+      }}
+    >
       <Header
         title={state.title}
         agents={state.agents}
         workspace={state.workspace}
-        approvalMode={state.approvalMode}
         onRename={(title) => {
           void window.agentsync.renameConversation(conversationId, title).catch((error: unknown) => console.error(errorMessage(error)))
         }}
@@ -96,14 +109,21 @@ export function ChatView({ conversationId, active = true, independentScroll = fa
         initialScrollTop={initialScrollTop}
         agents={state.agents}
         kind={state.kind}
+        onRevealAttachment={(id) => window.agentsync.revealAttachment(conversationId, id)}
         onApprove={(approvalId, decision) => {
           void window.agentsync.approve(conversationId, approvalId, decision).catch((error: unknown) => console.error(errorMessage(error)))
+        }}
+        onAnswer={(approvalId, answers) => {
+          void window.agentsync.answer(conversationId, approvalId, answers).catch((error: unknown) => console.error(errorMessage(error)))
         }}
       />
       <div className="composer-wrap">
         {state.dialogue && <DialogueBar dialogue={state.dialogue} agents={state.agents} />}
         {state.review && <ReviewBar review={state.review} />}
         <Composer
+          ref={composer}
+          to={recipient}
+          setTo={onRecipient}
           busy={busy}
           dialogue={state.dialogue !== null}
           canStartDialogue={canStartDialogue(state)}
@@ -124,10 +144,8 @@ export function ChatView({ conversationId, active = true, independentScroll = fa
                 },
               }
             : {})}
-          history={state.messages.filter((m) => m.from === 'user').map((m) => m.text)}
-          onSend={(text, to) => {
-            void send({ text, to }).catch((error: unknown) => console.error(errorMessage(error)))
-          }}
+          history={state.messages.filter((m) => m.from === 'user' && m.text !== '').map((m) => m.text)}
+          onSend={(text, to, files) => send({ text, to }, files)}
           onStop={() => void stop()}
         />
       </div>

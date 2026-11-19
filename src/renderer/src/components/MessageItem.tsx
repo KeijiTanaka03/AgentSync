@@ -1,9 +1,13 @@
-import { DISPLAY_NAMES, type AgentActivity, type ApprovalDecision, type ChatMessage, type Recipient } from '../../../shared/types'
+import { useState } from 'react'
+import { DISPLAY_NAMES, type AgentActivity, type ApprovalDecision, type ChatMessage, type QuestionAnswers, type Recipient } from '../../../shared/types'
+import { errorMessage } from '../errors'
 import { ActivityLine } from './Activity'
+import { AttachmentLabel } from './AttachmentLabel'
 import { Avatar } from './Avatar'
 import { CopyButton } from './CopyButton'
 import { MarkdownText } from './MarkdownText'
-import { ApprovalCard, DiffText, WorkLog } from './WorkLog'
+import { UrlText } from './UrlText'
+import { ApprovalCard, DiffText, QuestionCard, WorkLog } from './WorkLog'
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
@@ -30,10 +34,14 @@ interface MessageItemProps {
   interrupt?: boolean
   /** Answers an approval card in this reply. */
   onApprove?(approvalId: string, decision: ApprovalDecision): void
+  /** Answers a question card in this reply (null: skip). */
+  onAnswer?(approvalId: string, answers: QuestionAnswers | null): void
+  onRevealAttachment?(id: string): Promise<void>
 }
 
-export function MessageItem({ message, activity, interrupt = false, onApprove }: MessageItemProps) {
+export function MessageItem({ message, activity, interrupt = false, onApprove, onAnswer, onRevealAttachment }: MessageItemProps) {
   const time = formatTime(message.at)
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
 
   // A notice from AgentSync, shown as a line across the timeline (「ここから対話モード」).
   if (message.from === 'system') {
@@ -57,7 +65,26 @@ export function MessageItem({ message, activity, interrupt = false, onApprove }:
         {interrupt && <span className="interrupt-label">割り込み · 次の話者に渡されます</span>}
         <div className="bubble bubble-user">
           <span className={`to-tag to-tag-${message.to}`}>{USER_TAGS[message.to]}</span>
-          <span className="user-text">{message.text}</span>
+          {message.text && <span className="user-text"><UrlText text={message.text} /></span>}
+          {!!message.attachments?.length && (
+            <div className="attachment-list message-attachments" aria-label="添付ファイル">
+              {message.attachments.map((file) => (
+                <button
+                  key={file.id}
+                  type="button"
+                  className="attachment-chip"
+                  title={`${file.name} をファイル管理画面に表示`}
+                  onClick={() => {
+                    setAttachmentError(null)
+                    void onRevealAttachment?.(file.id).catch((error: unknown) => setAttachmentError(errorMessage(error)))
+                  }}
+                >
+                  <AttachmentLabel {...file} />
+                </button>
+              ))}
+            </div>
+          )}
+          {attachmentError && <p className="attachment-error error" role="alert">{attachmentError}</p>}
         </div>
         <span className="time">{time}</span>
       </div>
@@ -77,12 +104,16 @@ export function MessageItem({ message, activity, interrupt = false, onApprove }:
           <b>{DISPLAY_NAMES[agent]}</b> · {replyLabel(message.to)} · {time}
         </div>
         <div className={`bubble bubble-agent bubble-${agent}`} aria-busy={streaming}>
-          {message.tools && message.tools.length > 0 && <WorkLog tools={message.tools} live={streaming} />}
+          {message.tools && message.tools.length > 0 && <WorkLog tools={message.tools} />}
           {message.text !== '' && <MarkdownText text={message.text} />}
           {writing && <span className="caret" aria-hidden="true" />}
           {doing && !writing && <ActivityLine activity={doing} since={message.at} />}
           {message.approvals?.map((approval) => (
-            <ApprovalCard key={approval.id} approval={approval} onAnswer={(decision) => onApprove?.(approval.id, decision)} />
+            approval.kind === 'question' ? (
+              <QuestionCard key={approval.id} approval={approval} onAnswer={(answers) => onAnswer?.(approval.id, answers)} />
+            ) : (
+              <ApprovalCard key={approval.id} approval={approval} onAnswer={(decision) => onApprove?.(approval.id, decision)} />
+            )
           ))}
           {message.status === 'stopped' && <p className="note">停止しました</p>}
           {message.status === 'error' && (
