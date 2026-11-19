@@ -5,8 +5,9 @@ import { open, readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
-import type { ToolLogEntry } from '../../shared/types'
-import { ClaudeStreamParser, type ClaudeStreamEvent } from './claudeStream'
+import type { TokenUsage, ToolLogEntry } from '../../shared/types'
+import { ClaudeStreamParser, parseClaudeModelUsage, type ClaudeStreamEvent } from './claudeStream'
+import { tokenUsageDelta, ZERO_TOKENS } from './tokenUsage'
 import type { AgentAttachment, AgentRunRequest, AgentRunResult } from './types'
 
 const MINUTE = 60_000
@@ -31,6 +32,8 @@ interface SessionOptions {
   key: string
   /** What the last process of this session left in the prompt cache, to compact on return. */
   cache?: CacheState | null
+  /** The counters Claude Code restores from the same transcript on resume. */
+  totalTokenUsage?: TokenUsage
   onCache?(cache: CacheState | null): void
   /** `connectors`: where each connector of this process comes from, by tool prefix, as it reported at start. */
   approve(request: AgentRunRequest, tool: string, input: Json, connectors: ReadonlyMap<string, string>): Promise<true | string | { input: Json }>
@@ -45,6 +48,7 @@ interface Turn {
   promise: Promise<AgentRunResult>
   resolve(result: AgentRunResult): void
   reject(error: Error): void
+  onUsage?: AgentRunRequest['onUsage']
   stop(): void
   outcome?: Result
   sawInput?: boolean
@@ -90,10 +94,10 @@ function idleCompactMinimum(cwd: string, env: NodeJS.ProcessEnv): number | null 
 }
 
 /**
- * What a session left in the prompt cache, read back from Claude Code's own transcript when AgentSync has
- * just started: its last request, unless the conversation was compacted after it.
+ * Read the last prompt size and cumulative usage from Claude Code's transcript.
+ * A compaction boundary clears the prompt size but the usage totals carry over.
  */
-export async function transcriptCache(env: NodeJS.ProcessEnv, sessionId: string): Promise<CacheState | null> {
+export async function transcriptState(env: NodeJS.ProcessEnv, sessionId: string): Promise<{ cache: CacheState | null; totalTokenUsage?: TokenUsage } | null> {
   const projects = path.join(env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'), 'projects')
   const folders = await readdir(projects).catch(() => [] as string[])
   for (const folder of folders) {
@@ -106,17 +110,26 @@ export async function transcriptCache(env: NodeJS.ProcessEnv, sessionId: string)
       await file.read(buffer, 0, length, size - length)
       const lines = buffer.toString('utf8').split('\n')
       if (length < size) lines.shift()
+      let cache: CacheState | null | undefined
+      let totalTokenUsage: TokenUsage | undefined
       for (const line of lines.reverse()) {
         let entry: Json
         try { entry = settingsObject(JSON.parse(line)) } catch { continue }
-        if (entry.type === 'system' && entry.subtype === 'compact_boundary') return null
-        const usage = settingsObject(settingsObject(entry.message).usage)
-        if (entry.type !== 'assistant' || entry.isSidechain || !('cache_read_input_tokens' in usage)) continue
-        const at = Date.parse(String(entry.timestamp))
-        const tokens = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].reduce((sum, key) => sum + (Number(usage[key]) || 0), 0)
-        return Number.isFinite(at) ? { tokens, at } : null
+        if (entry.type === 'cost-state' && !totalTokenUsage) totalTokenUsage = parseClaudeModelUsage(entry.modelUsage)
+        if (cache === undefined) {
+          if (entry.type === 'system' && entry.subtype === 'compact_boundary') cache = null
+          else if (entry.type === 'assistant' && !entry.isSidechain) {
+            const usage = settingsObject(settingsObject(entry.message).usage)
+            if ('cache_read_input_tokens' in usage) {
+              const at = Date.parse(String(entry.timestamp))
+              const tokens = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].reduce((sum, key) => sum + (Number(usage[key]) || 0), 0)
+              cache = Number.isFinite(at) ? { tokens, at } : null
+            }
+          }
+        }
+        if (cache !== undefined && totalTokenUsage) break
       }
-      return null
+      return { cache: cache ?? null, totalTokenUsage }
     } finally {
       await file.close()
     }
@@ -157,6 +170,7 @@ export class ClaudeSession {
   private canCompact: boolean | null = null
   private backgroundTasks = false
   private cache: CacheState | null
+  private totalTokenUsage?: TokenUsage
   private compactTimer?: ReturnType<typeof setTimeout>
   private expireTimer?: ReturnType<typeof setTimeout>
 
@@ -166,6 +180,7 @@ export class ClaudeSession {
   constructor(private readonly options: SessionOptions) {
     this.sessionId = options.sessionId
     this.cache = options.cache ?? null
+    this.totalTokenUsage = options.sessionId ? options.totalTokenUsage : ZERO_TOKENS
     const child = spawn(options.binary, options.args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
     this.child = child
     child.once('error', (error) => { this.spawnError = error })
@@ -261,7 +276,7 @@ export class ClaudeSession {
     return this.closed
   }
 
-  private sendTurn(prompt: string | Json[], request: AgentRunRequest | null): Promise<AgentRunResult> {
+  private sendTurn(prompt: string | Json[], request: AgentRunRequest | null, onUsage = request?.onUsage): Promise<AgentRunResult> {
     if (request?.signal.aborted) return Promise.resolve({ text: '', status: 'stopped' })
     if (this.turn || this.closing || !this.child.stdin.writable) {
       return Promise.reject(new Error('Claude Codeセッションを開始できませんでした'))
@@ -272,7 +287,7 @@ export class ClaudeSession {
     let reject!: Turn['reject']
     const promise = new Promise<AgentRunResult>((done, fail) => { resolve = done; reject = fail })
     const parser = new ClaudeStreamParser(request?.access === 'chat' ? null : this.options.cwd)
-    const turn: Turn = { id, request, parser, promise, resolve, reject, stop: () => this.interrupt(turn) }
+    const turn: Turn = { id, request, parser, promise, resolve, reject, onUsage, stop: () => this.interrupt(turn) }
     this.turn = turn
     const { stop } = turn
     request?.signal.addEventListener('abort', stop, { once: true })
@@ -356,6 +371,7 @@ export class ClaudeSession {
         if (request && event.sessionId !== this.sessionId) {
           this.options.onSession(event.sessionId, this.sessionId)
           this.sessionId = event.sessionId
+          this.totalTokenUsage = ZERO_TOKENS
         }
         request?.onSession(event.sessionId)
         break
@@ -391,6 +407,14 @@ export class ClaudeSession {
 
   private finish(turn: Turn, result: Result): void {
     if (!turn.request && !result.matched) return
+    const { tokenUsage, totalTokenUsage } = result
+    // The per-turn result covers the main loop. A standalone /compact can report zero there
+    // even though its model call is counted in the cumulative modelUsage.
+    const delta = totalTokenUsage && this.totalTokenUsage ? tokenUsageDelta(totalTokenUsage, this.totalTokenUsage) : undefined
+    // A crash result can contain zeroed counters even though the CLI still has its old totals.
+    this.totalTokenUsage = result.ok || delta ? totalTokenUsage : undefined
+    const used = delta && (!tokenUsage || tokenUsageDelta(delta, tokenUsage)) ? delta : tokenUsage
+    if (used && (used.inputTokens > 0 || used.outputTokens > 0)) turn.onUsage?.(used)
     const compacted = !turn.request && result.command === 'compact' && turn.compacted
     if (!turn.request && !compacted) {
       this.takeTurn()
@@ -446,14 +470,23 @@ export class ClaudeSession {
   private async compact(report: (tool: ToolLogEntry) => void, title = '離席中にClaudeの会話を圧縮しました', signal?: AbortSignal): Promise<void> {
     const timeout = setTimeout(() => { void this.close() }, COMPACT_TIMEOUT)
     timeout.unref()
+    let tokenUsage: TokenUsage | undefined
+    let completed = false
     try {
-      await this.sendTurn('/compact', null)
-      if (!signal?.aborted) report({ id: randomUUID(), kind: 'other', title, status: 'done' })
+      await this.sendTurn('/compact', null, (usage) => { tokenUsage = usage })
+      completed = !signal?.aborted
     } catch {
       // Leave the transcript to Claude. Never retry a compaction automatically.
     } finally {
       clearTimeout(timeout)
     }
+    if (completed || tokenUsage) report({
+      id: randomUUID(),
+      kind: 'other',
+      title: completed ? title : 'Claudeの会話履歴の圧縮を完了できませんでした',
+      status: completed ? 'done' : 'failed',
+      ...(tokenUsage ? { tokenUsage } : {}),
+    })
   }
 
   private async answer(turn: Turn | null, id: string, body: Json): Promise<void> {

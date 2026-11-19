@@ -99,6 +99,28 @@ describe('ChatManager', () => {
     expect(lists.at(-1)![0]!.busy).toBe(false)
   })
 
+  it('saves reply and idle compaction usage separately across a restart', async () => {
+    const first = setup()
+    const id = first.manager.create()
+    first.manager.send(id, { text: '続けて', to: 'claude' })
+    const request = first.claude.calls[0]!
+    const replyUsage = { inputTokens: 9000, cachedInputTokens: 8000, cacheWriteInputTokens: 960, outputTokens: 100 }
+    const compactUsage = { inputTokens: 9900, cachedInputTokens: 8900, cacheWriteInputTokens: 980, outputTokens: 200 }
+    request.onUsage?.(replyUsage)
+    first.claude.reply('完了')
+    await settle()
+    request.onTool({ id: 'compact', kind: 'other', title: '履歴を圧縮しました', status: 'done', tokenUsage: compactUsage })
+    await settle()
+    first.manager.dispose()
+
+    const reopened = setup(first.directory)
+    expect(reopened.manager.snapshot(id).state.messages.at(-1)).toMatchObject({
+      tokenUsage: replyUsage,
+      tools: [{ tokenUsage: compactUsage }],
+    })
+    reopened.manager.dispose()
+  })
+
   it('reuses an empty conversation instead of making another', () => {
     const { manager } = setup()
     const first = manager.create()

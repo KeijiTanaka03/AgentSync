@@ -1,6 +1,8 @@
 // Parses the `--output-format stream-json` output of `claude -p` (one JSON object per line).
 import path from 'node:path'
-import type { AgentActivity, ToolLogEntry } from '../../shared/types'
+import type { AgentActivity, TokenUsage, ToolLogEntry } from '../../shared/types'
+import { parseTokenUsage } from '../../shared/validate'
+import { addTokenUsage, ZERO_TOKENS } from './tokenUsage'
 
 export type ClaudeStreamEvent =
   | { kind: 'session'; sessionId: string }
@@ -16,7 +18,14 @@ export type ClaudeStreamEvent =
   | { kind: 'control'; requestId: string; request: Record<string, unknown> }
   | ClaudeResult
 
-type ClaudeResult = { kind: 'result'; matched?: boolean; command?: string; inputIds?: string[] } & (
+type ClaudeResult = {
+  kind: 'result'
+  matched?: boolean
+  command?: string
+  inputIds?: string[]
+  tokenUsage?: TokenUsage
+  totalTokenUsage?: TokenUsage
+} & (
   | { ok: true; text: string }
   | { ok: false; error: string }
 )
@@ -29,6 +38,30 @@ function isObject(value: unknown): value is Json {
 
 function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+/** Claude reports uncached input separately from both of the cache counts. */
+function claudeTokenUsage(input: unknown, output: unknown, read: unknown = 0, write: unknown = 0): TokenUsage | undefined {
+  if (typeof input !== 'number' || !Number.isSafeInteger(input) || input < 0 || typeof read !== 'number' || typeof write !== 'number') return
+  return parseTokenUsage({
+    inputTokens: input + read + write,
+    cachedInputTokens: read,
+    cacheWriteInputTokens: write,
+    outputTokens: output,
+  })
+}
+
+/** The result and the transcript's cost-state both report these cumulative counts by model. */
+export function parseClaudeModelUsage(raw: unknown): TokenUsage | undefined {
+  if (!isObject(raw) || Array.isArray(raw)) return
+  let total = ZERO_TOKENS
+  for (const model of Object.values(raw)) {
+    if (!isObject(model)) return
+    const usage = claudeTokenUsage(model.inputTokens, model.outputTokens, model.cacheReadInputTokens, model.cacheCreationInputTokens)
+    if (!usage) return
+    total = addTokenUsage(total, usage)
+  }
+  return total
 }
 
 const MAX_TITLE = 200
@@ -238,6 +271,10 @@ export class ClaudeStreamParser {
   }
 
   private onResult(data: Json): ClaudeResult {
+    const usage = isObject(data.usage) ? data.usage : {}
+    const tokenUsage = claudeTokenUsage(usage.input_tokens, usage.output_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens)
+    const totalTokenUsage = parseClaudeModelUsage(data.modelUsage)
+    const metrics = { ...(tokenUsage ? { tokenUsage } : {}), ...(totalTokenUsage ? { totalTokenUsage } : {}) }
     const isError = data.is_error === true || (typeof data.subtype === 'string' && data.subtype !== 'success')
     if (isError) {
       const errors = Array.isArray(data.errors) ? data.errors.filter((e): e is string => typeof e === 'string') : []
@@ -245,10 +282,10 @@ export class ClaudeStreamParser {
         errors.join('\n') ||
         (typeof data.result === 'string' && data.result) ||
         `Claude の応答に失敗しました（${String(data.subtype ?? 'unknown')}）`
-      return { kind: 'result', ok: false, error: message }
+      return { kind: 'result', ok: false, error: message, ...metrics }
     }
     // Prefer what was streamed; fall back to the final result text.
     const text = this.streamedText || (typeof data.result === 'string' ? data.result : '')
-    return { kind: 'result', ok: true, text }
+    return { kind: 'result', ok: true, text, ...metrics }
   }
 }

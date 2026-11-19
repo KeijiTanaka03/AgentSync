@@ -37,6 +37,14 @@ export type ConversationKind = 'chat' | 'code'
  */
 export type ApprovalMode = 'ask' | 'auto'
 
+/** Counts across the model calls for one reply or work step. Input includes both cache counts. */
+export interface TokenUsage {
+  inputTokens: number
+  cachedInputTokens: number
+  cacheWriteInputTokens: number
+  outputTokens: number
+}
+
 /** One step an agent took while replying in a coding conversation (read a file, ran a command, …). */
 export interface ToolLogEntry {
   id: string
@@ -44,6 +52,8 @@ export interface ToolLogEntry {
   /** One line: a path, a command, a search pattern. A `note` is what the agent said while working, in full. */
   title: string
   status: 'running' | 'done' | 'failed'
+  /** Usage reported separately by the CLI, for example when compacting a Claude session. */
+  tokenUsage?: TokenUsage
 }
 
 /** One choice of a question an agent asks (Claude Code's AskUserQuestion, Codex's request_user_input). */
@@ -122,6 +132,8 @@ export interface ChatMessage {
   tools?: ToolLogEntry[]
   /** Coding conversations: what the agent asked to be allowed during this reply. */
   approvals?: ApprovalEntry[]
+  /** Usage reported for this reply itself. Separately executed steps have their own counts. */
+  tokenUsage?: TokenUsage
 }
 
 /** What an agent is doing while it replies. */

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CodexAdapter, unwrapShell } from '../src/main/agents/codex'
 import type { RpcConnection } from '../src/main/agents/jsonRpc'
 import type { AgentRunRequest } from '../src/main/agents/types'
-import type { AgentActivity, ToolLogEntry } from '../src/shared/types'
+import type { AgentActivity, TokenUsage, ToolLogEntry } from '../src/shared/types'
 import type { ApprovalRequest } from '../src/main/agents/types'
 
 /** A stand-in for `codex app-server` that records requests and lets the test push notifications. */
@@ -107,6 +107,50 @@ function setup() {
 }
 
 describe('CodexAdapter', () => {
+  it('reports usage for the active reply across several requests without counting repeats or the resumed history', async () => {
+    const { server, adapter } = setup()
+    const reports: TokenUsage[] = []
+    const counts = (inputTokens: number, cachedInputTokens: number, cacheWriteInputTokens: number, outputTokens: number) =>
+      ({ inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens })
+    const usage = (turnId: string, total: TokenUsage, last: TokenUsage) =>
+      server.push('thread/tokenUsage/updated', { turnId, tokenUsage: { total, last } })
+
+    const first = adapter.run(request({ sessionId: 'thread-1', onUsage: (value) => reports.push(value) }).req)
+    await flush()
+    const afterRequest = counts(1050, 640, 10, 82)
+    const afterTool = counts(1110, 690, 13, 85)
+    usage('turn-1', afterRequest, counts(50, 40, 2, 2))
+    usage('turn-1', afterRequest, counts(50, 40, 2, 2))
+    usage('turn-1', afterTool, counts(60, 50, 3, 3))
+    // Re-estimating the context after compaction can change "last" without any new spend.
+    usage('turn-1', afterTool, counts(0, 0, 0, 0))
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+    await first
+
+    const second = adapter.run(request({ sessionId: 'thread-1', onUsage: (value) => reports.push(value) }).req)
+    await flush()
+    usage('turn-2', afterTool, counts(60, 50, 3, 3))
+    usage('turn-2', counts(1200, 770, 13, 95), counts(90, 80, 0, 10))
+    server.push('turn/completed', { turn: { id: 'turn-2', status: 'interrupted' } })
+    await second
+
+    expect(reports).toEqual([counts(110, 90, 5, 5), counts(90, 80, 0, 10)])
+  })
+
+  it('does not report old usage replayed by a rate-limit failure on the first turn after resume', async () => {
+    const { server, adapter } = setup()
+    const reports: TokenUsage[] = []
+    const reply = adapter.run(request({ sessionId: 'thread-1', onUsage: (value) => reports.push(value) }).req)
+    await flush()
+    server.push('thread/tokenUsage/updated', { turnId: 'turn-1', tokenUsage: {
+      total: { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 100 },
+      last: { inputTokens: 50, cachedInputTokens: 40, outputTokens: 20 },
+    } })
+    server.push('turn/completed', { turn: { id: 'turn-1', status: 'failed', error: { message: 'rate limit' } } })
+    await expect(reply).rejects.toThrow('rate limit')
+    expect(reports).toEqual([])
+  })
+
   it('steers the active turn and stops accepting follow-ups after completion', async () => {
     const { server, adapter } = setup()
     let steer!: (text: string) => Promise<boolean>

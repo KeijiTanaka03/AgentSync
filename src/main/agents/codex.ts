@@ -1,8 +1,10 @@
 import path from 'node:path'
-import type { AgentActivity, AgentChoices, ApprovalMode, ToolLogEntry } from '../../shared/types'
+import type { AgentActivity, AgentChoices, ApprovalMode, TokenUsage, ToolLogEntry } from '../../shared/types'
+import { parseTokenUsage } from '../../shared/validate'
 import type { Access, AgentAdapter, AgentAttachment, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
 import { isVerifiedCodexRead } from './connectorReads'
 import { RpcError, type RpcConnection } from './jsonRpc'
+import { addTokenUsage, tokenUsageDelta, ZERO_TOKENS } from './tokenUsage'
 
 // The subset of the `codex app-server` protocol this adapter uses.
 // Generated reference: `codex app-server generate-ts --out <dir>`.
@@ -76,7 +78,14 @@ export interface CodexAdapterOptions {
 }
 
 /** A listener for notifications that belong to one thread. */
-type ThreadListener = (method: string, params: Json) => void
+type TokenUsageUpdate = { counts: TokenUsage; withoutBaseline: boolean }
+type ThreadListener = (method: string, params: Json, usage?: TokenUsageUpdate) => void
+
+function codexTokenUsage(raw: unknown): TokenUsage | undefined {
+  if (typeof raw !== 'object' || raw === null) return
+  const counts = raw as Json
+  return parseTokenUsage({ ...counts, cacheWriteInputTokens: counts.cacheWriteInputTokens ?? 0 })
+}
 
 /** Answers the approval requests of the turn running on a thread. */
 type ApprovalHandler = (method: string, params: Json) => Promise<unknown>
@@ -217,6 +226,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly threadAlways = new Map<string, boolean>()
   private readonly threadListeners = new Map<string, ThreadListener>()
   private readonly approvalHandlers = new Map<string, ApprovalHandler>()
+  private readonly threadTokenTotals = new Map<string, TokenUsage>()
   /**
    * The model and effort each loaded thread runs at, as last set in this process. Codex keeps a model or
    * effort given with a turn for the later turns too. A thread resumed from an earlier run is not listed: unknown.
@@ -251,6 +261,7 @@ export class CodexAdapter implements AgentAdapter {
       const started = await rpc.request<ThreadResponse>('thread/start', threadSettings)
       threadId = started.thread.id
       this.loadedThreads.add(threadId)
+      this.threadTokenTotals.set(threadId, ZERO_TOKENS)
       this.threadSettings.set(threadId, { model: request.model, effort: null })
       request.onSession(threadId)
       request.onModel(started.model)
@@ -308,8 +319,11 @@ export class CodexAdapter implements AgentAdapter {
     const rpc = await this.options.connect()
     rpc.onNotification = (method, params) => {
       if (typeof params !== 'object' || params === null) return
-      const threadId = (params as Json).threadId
-      if (typeof threadId === 'string') this.threadListeners.get(threadId)?.(method, params as Json)
+      const data = params as Json
+      const { threadId } = data
+      if (typeof threadId !== 'string') return
+      const usage = method === 'thread/tokenUsage/updated' ? this.updateTokenUsage(threadId, data.tokenUsage) : undefined
+      this.threadListeners.get(threadId)?.(method, data, usage)
     }
     // Approval requests go to the turn running on their thread; with none running, the answer is no.
     rpc.onServerRequest = async (method, params) => {
@@ -341,8 +355,22 @@ export class CodexAdapter implements AgentAdapter {
     this.loadedThreads.clear()
     this.threadAlways.clear()
     this.threadSettings.clear()
+    this.threadTokenTotals.clear()
     this.models = null
     this.config = null
+  }
+
+  private updateTokenUsage(threadId: string, raw: unknown): TokenUsageUpdate | undefined {
+    if (typeof raw !== 'object' || raw === null) return
+    const data = raw as Json
+    const total = codexTokenUsage(data.total)
+    if (!total) return
+    const previous = this.threadTokenTotals.get(threadId)
+    this.threadTokenTotals.set(threadId, total)
+    // The first update can arrive after a metadata-only resume that omitted the old counts.
+    // Use only its last request in that case; later differences also handle repeated snapshots.
+    const counts = (previous && tokenUsageDelta(total, previous)) ?? codexTokenUsage(data.last)
+    return counts ? { counts, withoutBaseline: !previous } : undefined
   }
 
   private listModels(rpc: RpcConnection): Promise<CodexModel[]> {
@@ -402,9 +430,12 @@ export class CodexAdapter implements AgentAdapter {
     const policy = codexPolicy(request.access, request.approval)
     return new Promise<AgentRunResult>((resolve, reject) => {
       let turnId: string | null = null
+      let startedTurnId: string | null = null
       let finished = false
       let lastItemId: string | null = null
       let lastError: string | null = null
+      let tokenUsage = ZERO_TOKENS
+      let firstRequestUsage: TokenUsage | undefined
       // Agent message items in arrival order; a turn may contain more than one.
       const items = new Map<string, string>()
       // Codex marks what it says while working as commentary; like Codex itself, that is not the answer.
@@ -416,11 +447,15 @@ export class CodexAdapter implements AgentAdapter {
       const interrupt = () => {
         if (turnId) void rpc.request('turn/interrupt', { threadId, turnId }).catch(() => {})
       }
-      const finish = () => {
+      const finish = (completed = false) => {
+        if (finished) return
         finished = true
         this.threadListeners.delete(threadId)
         this.approvalHandlers.delete(threadId)
         request.signal.removeEventListener('abort', interrupt)
+        // A rate-limit error can replay the last request from before a resume, with no new tokens.
+        const used = completed && firstRequestUsage ? addTokenUsage(tokenUsage, firstRequestUsage) : tokenUsage
+        if (used.inputTokens > 0 || used.outputTokens > 0) request.onUsage?.(used)
       }
 
       // File changes arrive as items first; their approval request only names the item.
@@ -489,11 +524,23 @@ export class CodexAdapter implements AgentAdapter {
         return { decision: decision === 'allow' ? 'accept' : 'decline' }
       })
 
-      this.threadListeners.set(threadId, (method, params) => {
+      this.threadListeners.set(threadId, (method, params, usage) => {
         const paramTurnId = typeof params.turnId === 'string' ? params.turnId : null
         if (turnId && paramTurnId && paramTurnId !== turnId) return
 
         switch (method) {
+          case 'turn/started': {
+            const turn = params.turn as Json | undefined
+            // The start notification and first counts can arrive in the same chunk as the RPC reply.
+            if (!turnId && typeof turn?.id === 'string') startedTurnId = turn.id
+            return
+          }
+          case 'thread/tokenUsage/updated':
+            if (usage && paramTurnId && paramTurnId === (turnId ?? startedTurnId)) {
+              if (usage.withoutBaseline) firstRequestUsage = usage.counts
+              else tokenUsage = addTokenUsage(tokenUsage, usage.counts)
+            }
+            return
           case 'item/agentMessage/delta': {
             const itemId = String(params.itemId)
             const delta = typeof params.delta === 'string' ? params.delta : ''
@@ -538,7 +585,7 @@ export class CodexAdapter implements AgentAdapter {
           case 'turn/completed': {
             const { turn } = params as unknown as TurnCompletedParams
             if (turnId && turn.id !== turnId) return
-            finish()
+            finish(turn.status === 'completed')
             if (turn.status === 'completed') resolve({ text: fullText(), status: 'done' })
             else if (turn.status === 'interrupted') resolve({ text: fullText(), status: 'stopped' })
             else reject(new Error(turn.error?.message ?? lastError ?? 'GPT の応答に失敗しました'))

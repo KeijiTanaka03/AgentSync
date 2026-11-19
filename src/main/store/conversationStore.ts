@@ -16,7 +16,7 @@ import {
   type ToolLogEntry,
   type Roles,
 } from '../../shared/types'
-import { isConversationId, isEffort } from '../../shared/validate'
+import { isConversationId, isEffort, parseTokenUsage } from '../../shared/validate'
 import { AttachmentStore, parseFileAttachment } from './attachmentStore'
 
 /** What the app remembers about one agent in one conversation. */
@@ -72,11 +72,13 @@ function parseTool(raw: unknown): ToolLogEntry | null {
   if (!isRecord(raw) || !isString(raw.id) || !isString(raw.title) || !TOOL_KINDS.includes(raw.kind as ToolLogEntry['kind'])) return null
   // A step still running when the app closed did not finish.
   const status = raw.status === 'done' ? 'done' : 'failed'
+  const tokenUsage = parseTokenUsage(raw.tokenUsage)
   return {
     id: raw.id,
     kind: raw.kind as ToolLogEntry['kind'],
     title: raw.title,
     status,
+    ...(tokenUsage ? { tokenUsage } : {}),
   }
 }
 
@@ -109,6 +111,8 @@ function parseMessage(raw: unknown): ChatMessage | null {
     status: status === 'streaming' ? 'stopped' : (status as MessageStatus),
   }
   if (isString(error)) message.error = error
+  const tokenUsage = parseTokenUsage(raw.tokenUsage)
+  if (tokenUsage && AGENT_IDS.includes(from as AgentId)) message.tokenUsage = tokenUsage
   if (from === 'user' && Array.isArray(attachments)) {
     const files = attachments.map(parseFileAttachment).filter((file): file is FileAttachment => file !== null)
     if (files.length) message.attachments = files

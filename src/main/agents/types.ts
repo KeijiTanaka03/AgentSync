@@ -1,4 +1,4 @@
-import type { AgentActivity, AgentChoices, AgentId, AgentQuestion, ApprovalEntry, ApprovalMode, FileAttachment, QuestionAnswers, ToolLogEntry } from '../../shared/types'
+import type { AgentActivity, AgentChoices, AgentId, AgentQuestion, ApprovalEntry, ApprovalMode, FileAttachment, QuestionAnswers, TokenUsage, ToolLogEntry } from '../../shared/types'
 
 /**
  * What an agent may do on this turn. In every case the CLI keeps its own abilities (web search, the
@@ -37,6 +37,8 @@ export interface AgentRunRequest {
   onModel(model: string): void
   /** Called with each chunk of streamed reply text. */
   onText(delta: string): void
+  /** The model usage reported for this reply by the CLI, including its tool-call rounds. */
+  onUsage?(usage: TokenUsage): void
   /**
    * Called when the agent starts thinking, searching or using a tool.
    * (Writing is known from `onText`, so adapters need not report it.)

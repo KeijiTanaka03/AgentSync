@@ -9,9 +9,19 @@ import {
   type SendRequest,
   type SendTarget,
   type Roles,
+  type TokenUsage,
 } from './types'
 
 const TARGETS: readonly SendTarget[] = ['all', ...AGENT_IDS]
+
+export function parseTokenUsage(raw: unknown): TokenUsage | undefined {
+  if (typeof raw !== 'object' || raw === null) return
+  const { inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens } = raw as Record<string, unknown>
+  const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  if (!isCount(inputTokens) || !isCount(cachedInputTokens) || !isCount(cacheWriteInputTokens) || !isCount(outputTokens)) return
+  if (cachedInputTokens > inputTokens || cacheWriteInputTokens > inputTokens) return
+  return { inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens }
+}
 
 /** Conversation IDs are also file names, so only a narrow set of characters is allowed. */
 const CONVERSATION_ID = /^[a-z0-9][a-z0-9-]{0,63}$/

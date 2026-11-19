@@ -3,7 +3,7 @@ import readline from 'node:readline'
 import path from 'node:path'
 import type { AgentChoices, AgentQuestion, QuestionAnswers } from '../../shared/types'
 import type { AgentAdapter, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
-import { ClaudeSession, transcriptCache, type CacheState } from './claudeSession'
+import { ClaudeSession, transcriptState, type CacheState } from './claudeSession'
 import { describeClaudeTool, isReadOnlyTool, mcpTool } from './claudeStream'
 import { isVerifiedClaudeRead } from './connectorReads'
 
@@ -203,26 +203,28 @@ export class ClaudeAdapter implements AgentAdapter {
       await existing.close()
       if (request.signal.aborted) return stopped
     }
-    if (sessionId && !this.restored.has(sessionId)) {
-      // After AgentSync restarts, only Claude Code's transcript knows how large the conversation was.
-      this.restored.add(sessionId)
-      const cache = this.caches.has(sessionId) ? null : await transcriptCache(this.options.env(), sessionId).catch(() => null)
-      if (cache) this.caches.set(sessionId, cache)
-      if (request.signal.aborted) return stopped
-    }
-    if (sessionId && this.sessions.has(sessionId)) throw new Error('このClaude Codeセッションは実行中です')
-    const session = this.start(binary, args, key, request)
+    const session = await this.start(binary, args, key, request)
+    if (!session) return stopped
     await session.compactOnReturn(request)
     if (request.signal.aborted) return stopped
     if (session.matches(key)) return session.run(request)
     // The CLI could not compact (or was closed meanwhile); go on without compacting.
     await session.close()
     if (request.signal.aborted) return stopped
-    return this.start(binary, args, key, request).run(request)
+    const replacement = await this.start(binary, args, key, request)
+    return replacement ? replacement.run(request) : stopped
   }
 
-  private start(binary: string, args: string[], key: string, request: AgentRunRequest): ClaudeSession {
+  private async start(binary: string, args: string[], key: string, request: AgentRunRequest): Promise<ClaudeSession | null> {
     const { sessionId, cwd } = request
+    const env = this.options.env()
+    const history = sessionId ? await transcriptState(env, sessionId).catch(() => null) : null
+    if (request.signal.aborted) return null
+    if (sessionId && this.sessions.has(sessionId)) throw new Error('このClaude Codeセッションは実行中です')
+    if (sessionId && !this.restored.has(sessionId)) {
+      this.restored.add(sessionId)
+      if (history?.cache && !this.caches.has(sessionId)) this.caches.set(sessionId, history.cache)
+    }
     const forget = (id: string | null) => {
       if (id && this.sessions.get(id) === session) this.sessions.delete(id)
     }
@@ -230,10 +232,11 @@ export class ClaudeAdapter implements AgentAdapter {
       binary,
       args: sessionId ? [...args, '--resume', sessionId] : args,
       cwd,
-      env: this.options.env(),
+      env,
       sessionId,
       key,
       cache: sessionId ? this.caches.get(sessionId) : null,
+      totalTokenUsage: history?.totalTokenUsage,
       onCache: (cache) => {
         const id = session.sessionId
         if (!id) return

@@ -665,8 +665,9 @@ export class Orchestrator {
         effort: agent.info.effort,
         access,
         approval: this.approvalMode,
+        onUsage: (usage) => { reply.tokenUsage = usage },
         onTool: (tool) => {
-          if (controller.signal.aborted) return
+          if (controller.signal.aborted && !tool.tokenUsage) return
           reply.tools = upsert(reply.tools, tool)
           this.emit({ type: 'message:tool', id: reply.id, tool })
         },

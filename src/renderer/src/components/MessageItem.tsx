@@ -6,6 +6,7 @@ import { AttachmentLabel } from './AttachmentLabel'
 import { Avatar } from './Avatar'
 import { CopyButton } from './CopyButton'
 import { MarkdownText } from './MarkdownText'
+import { TokenUsageLine } from './TokenUsageLine'
 import { UrlText } from './UrlText'
 import { ApprovalCard, DiffText, QuestionCard, WorkLog } from './WorkLog'
 
@@ -121,6 +122,7 @@ export function MessageItem({ message, activity, interrupt = false, onApprove, o
               {message.error ?? 'エラーが発生しました'}
             </p>
           )}
+          {message.tokenUsage && <TokenUsageLine usage={message.tokenUsage} />}
         </div>
         {!streaming && message.text !== '' && (
           <div className="message-actions">

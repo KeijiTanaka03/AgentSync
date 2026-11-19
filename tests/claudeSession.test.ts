@@ -27,6 +27,24 @@ const args = process.argv.slice(2)
 const resume = args.indexOf('--resume')
 const session = resume < 0 ? String(process.pid) : args[resume + 1]
 const record = (message) => fs.appendFileSync(process.env.TEST_INPUT_LOG, JSON.stringify(message) + '\\n')
+const costFile = require('node:path').join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'project', session + '.jsonl')
+const restored = fs.existsSync(costFile)
+  ? fs.readFileSync(costFile, 'utf8').trim().split('\\n').map(JSON.parse).findLast(e => e.type === 'cost-state')?.modelUsage?.opus
+  : null
+const total = restored || { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 0 }
+function measuredResult(result, input, read, write, output) {
+  total.inputTokens += input
+  total.cacheReadInputTokens += read
+  total.cacheCreationInputTokens += write
+  total.outputTokens += output
+  const compact = result.local_command === 'compact'
+  response({ ...result, modelUsage: { opus: total }, usage: {
+    input_tokens: compact ? 0 : input,
+    cache_read_input_tokens: compact ? 0 : read,
+    cache_creation_input_tokens: compact ? 0 : write,
+    output_tokens: compact ? 0 : output,
+  } })
+}
 let steeringTurn
 let pendingEdit
 let hanging
@@ -61,7 +79,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (prompt === '/compact') {
     setTimeout(() => {
       response({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual', pre_tokens: 300000 } })
-      response({ ...result, local_command: 'compact' })
+      measuredResult({ ...result, local_command: 'compact' }, 25, 250000, 200, 30)
     }, 120)
     return
   }
@@ -90,7 +108,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     cache_creation: { ephemeral_1h_input_tokens: forHour, ephemeral_5m_input_tokens: forFiveMinutes },
   } } } })
   if (prompt === '途中で追記') steeringTurn = input.uuid
-  else response(result)
+  else measuredResult(result, 100, read, forHour + forFiveMinutes, 20)
 })
 `)
   chmodSync(binary, 0o755)
@@ -103,6 +121,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     rmSync(directory, { recursive: true, force: true })
   })
   const onTool = vi.fn()
+  const onUsage = vi.fn()
   let sessionId: string | null = null
   const run = (prompt: string, options: Partial<AgentRunRequest> = {}) => adapter.run({
     prompt,
@@ -120,6 +139,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     onModel: () => {},
     onText: () => {},
     onTool,
+    onUsage,
     requestApproval: async () => 'deny',
     ...options,
   })
@@ -131,9 +151,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     writeFileSync(path.join(directory, 'projects', 'project', `${id}.jsonl`), [
       { type: 'user', timestamp: at, message: { role: 'user', content: 'x' } },
       { type: 'assistant', timestamp: at, message: { role: 'assistant', usage } },
+      { type: 'cost-state', modelUsage: { opus: { inputTokens: 42, cacheReadInputTokens: tokens, cacheCreationInputTokens: 190000, outputTokens: 67 } } },
     ].map((entry) => JSON.stringify(entry)).join('\n') + '\n')
   }
-  return { run, recorded, adapter, onTool, directory, transcript, sessionId: () => sessionId }
+  return { run, recorded, adapter, onTool, onUsage, directory, transcript, sessionId: () => sessionId }
 }
 
 function clock() {
@@ -214,7 +235,7 @@ describe('Claude Code live sessions', () => {
 
   it('refreshes a live 1-hour cache and compacts the same transcript only once before the next message', async () => {
     const advance = clock()
-    const { run, recorded, onTool } = setup()
+    const { run, recorded, onTool, onUsage } = setup()
     await run('large')
     await advance(10 * MINUTE)
     await run('cache hit')
@@ -226,7 +247,16 @@ describe('Claude Code live sessions', () => {
     expect(await run('back from break')).toEqual({ text: 'back from break', status: 'done' })
     expect(recorded().map((entry) => entry.prompt)).toEqual(['large', 'cache hit', '/compact', 'back from break'])
     expect(new Set(recorded().map((entry) => entry.pid)).size).toBe(1)
-    expect(onTool).toHaveBeenCalledWith(expect.objectContaining({ status: 'done', title: expect.stringContaining('圧縮') }))
+    expect(onTool).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'done',
+      title: expect.stringContaining('圧縮'),
+      tokenUsage: { inputTokens: 250225, cachedInputTokens: 250000, cacheWriteInputTokens: 200, outputTokens: 30 },
+    }))
+    expect(onUsage.mock.calls.map(([usage]) => usage)).toEqual([
+      { inputTokens: 300100, cachedInputTokens: 0, cacheWriteInputTokens: 300000, outputTokens: 20 },
+      { inputTokens: 290100, cachedInputTokens: 290000, cacheWriteInputTokens: 0, outputTokens: 20 },
+      { inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 20 },
+    ])
   })
 
   it.each([
@@ -271,10 +301,15 @@ describe('Claude Code live sessions', () => {
   })
 
   it('compacts an existing large thread first after AgentSync restarts, reading Claude Code\'s transcript', async () => {
-    const { run, recorded, transcript } = setup()
+    const { run, recorded, transcript, onTool, onUsage } = setup()
     transcript('old-thread', '2026-11-18T14:48:00.000Z', 520000)
     expect(await run('good morning', { sessionId: 'old-thread' })).toEqual({ text: 'good morning', status: 'done' })
     expect(recorded().map((entry) => [entry.prompt, entry.session])).toEqual([['/compact', 'old-thread'], ['good morning', 'old-thread']])
+    expect(onTool).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Claudeの会話を圧縮してから再開しました',
+      tokenUsage: { inputTokens: 250225, cachedInputTokens: 250000, cacheWriteInputTokens: 200, outputTokens: 30 },
+    }))
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({ inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 20 })
   })
 
   it('leaves a small or recent thread as it is after AgentSync restarts', async () => {

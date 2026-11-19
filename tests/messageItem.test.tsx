@@ -40,6 +40,26 @@ describe('MessageItem', () => {
     expect(html({ ...reply, text: '途中' }, { kind: 'writing' })).not.toContain('class="message-actions"')
   })
 
+  it('displays reply token counts and shows the separate compaction counts in the work log', () => {
+    const markup = html({
+      ...reply,
+      from: 'claude',
+      status: 'done',
+      text: '完了',
+      tokenUsage: { inputTokens: 42082, cachedInputTokens: 41472, cacheWriteInputTokens: 200, outputTokens: 234 },
+      tools: [{
+        id: 'compact', kind: 'other', title: '履歴を圧縮しました', status: 'done',
+        tokenUsage: { inputTokens: 190000, cachedInputTokens: 188000, cacheWriteInputTokens: 1900, outputTokens: 789 },
+      }],
+    }, null)
+    expect(markup).toContain('入力 42,082')
+    expect(markup).toContain('キャッシュ読込 41,472')
+    expect(markup).toContain('書込 200')
+    expect(markup).toContain('出力 234')
+    expect(markup).toMatch(/<details class="work-log">.*圧縮しました.*入力 190,000.*出力 789.*<\/details>/)
+    expect(html(reply, null)).not.toContain('使用トークン数')
+  })
+
   it('shows a notice from AgentSync as a line across the timeline', () => {
     const notice: ChatMessage = { id: 3, from: 'system', to: 'all', text: 'ここから対話モード · Claude から開始', at: reply.at, status: 'done', notice: 'dialogue-start' }
     expect(html(notice, null)).toBe('<p class="notice notice-dialogue-start">ここから対話モード · Claude から開始</p>')

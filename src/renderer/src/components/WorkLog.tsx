@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ApprovalDecision, ApprovalEntry, QuestionAnswers, ToolLogEntry } from '../../../shared/types'
+import { TokenUsageLine } from './TokenUsageLine'
 import { ChatIcon, CheckIcon, CrossIcon, FileIcon, FolderIcon, PencilIcon, SearchIcon, TerminalIcon } from './icons'
 
 function StepIcon({ kind }: { kind: ToolLogEntry['kind'] }) {
@@ -25,7 +26,10 @@ export function WorkLog({ tools }: { tools: ToolLogEntry[] }) {
         {tools.map((tool) => (
           <li key={tool.id} className={`work-step work-${tool.status}${tool.kind === 'note' ? ' work-note' : ''}`}>
             <StepIcon kind={tool.kind} />
-            {tool.kind === 'note' ? <span className="work-note-text">{tool.title}</span> : <code title={tool.title}>{tool.title}</code>}
+            <div className="work-step-main">
+              {tool.kind === 'note' ? <span className="work-note-text">{tool.title}</span> : <code title={tool.title}>{tool.title}</code>}
+              {tool.tokenUsage && <TokenUsageLine usage={tool.tokenUsage} />}
+            </div>
             {tool.status === 'running' ? (
               <span className="work-dot" aria-label="実行中" />
             ) : tool.status === 'failed' ? (

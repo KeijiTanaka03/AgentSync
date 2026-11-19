@@ -929,6 +929,19 @@ button {
   border-radius: 4px 18px 18px 18px;
 }
 
+.token-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bubble-agent > .token-usage {
+  margin-top: 8px;
+}
+
 .bubble-claude {
   border-color: var(--claude-line);
 }
@@ -1122,9 +1135,13 @@ button {
   color: var(--muted);
 }
 
-.work-step code {
+.work-step-main {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.work-step code {
+  display: block;
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: 12px;
