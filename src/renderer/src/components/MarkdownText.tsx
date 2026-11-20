@@ -23,7 +23,7 @@ function CodeBlock(props: ComponentProps<'pre'> & { node?: unknown }) {
     <div className="code-block">
       <div className="code-block-bar">
         <span className="code-block-language">{language}</span>
-        <CopyButton getText={() => ref.current?.textContent ?? ''} />
+        <CopyButton getText={() => (ref.current?.textContent ?? '').replace(/[\r\n]+$/, '')} />
       </div>
       <pre ref={ref} {...rest}>
         {children}
