@@ -287,7 +287,7 @@ describe('Orchestrator', () => {
 })
 
 describe('Orchestrator dialogue mode', () => {
-  const start = '【AgentSync からのお知らせ】\nここから「対話モード」です。'
+  const start = '【AgentSync】\nDialogue mode:'
 
   /** A topic both agents have answered, GPT last. */
   async function debate() {
@@ -308,7 +308,7 @@ describe('Orchestrator dialogue mode', () => {
     expect(orchestrator.snapshot().state.dialogue).toEqual({ next: 'claude', turns: 0 })
     expect(messages().at(-2)).toMatchObject({ from: 'system', to: 'all', notice: 'dialogue-start', text: 'ここから対話モード · Claude から開始' })
     expect(claude.calls).toHaveLength(2)
-    expect(claude.calls[1]!.prompt).toContain('【GPT → ユーザー】\nそうとも限りません\n\n' + start + 'あなたと GPT が交互に発言し')
+    expect(claude.calls[1]!.prompt).toContain('【GPT → ユーザー】\nそうとも限りません\n\n' + start + ' you and GPT take turns')
     expect(gpt.pending).toBe(0)
 
     claude.reply('通勤がなくなります')
@@ -316,7 +316,7 @@ describe('Orchestrator dialogue mode', () => {
     expect(messages().find((m) => m.text === '通勤がなくなります')).toMatchObject({ from: 'claude', to: 'gpt' })
     expect(orchestrator.snapshot().state.dialogue).toEqual({ next: 'gpt', turns: 1 })
     expect(gpt.calls).toHaveLength(2)
-    expect(gpt.calls[1]!.prompt).toContain(start + 'あなたと Claude が交互に発言し')
+    expect(gpt.calls[1]!.prompt).toContain(start + ' you and Claude take turns')
     expect(gpt.calls[1]!.prompt.endsWith('【Claude → あなた】\n通勤がなくなります')).toBe(true)
 
     gpt.reply('でも新人は育ちにくい')
@@ -360,7 +360,7 @@ describe('Orchestrator dialogue mode', () => {
     orchestrator.setDialogue(true)
     await flush()
     expect(gpt.calls).toHaveLength(2)
-    expect(gpt.calls[1]!.prompt).toContain('【AgentSync からのお知らせ】\n対話モードが終わりました。')
+    expect(gpt.calls[1]!.prompt).toContain('【AgentSync】\nDialogue mode ended.')
   })
 
   it('stops on an error, and with the stop button', async () => {
@@ -475,15 +475,14 @@ describe('Orchestrator in a coding conversation', () => {
     await flush()
     const call = claude.calls[0]!
     expect([call.access, call.approval, call.cwd]).toEqual(['write', 'ask', '/work/app'])
-    expect(call.systemPrompt).toContain('プロジェクトのフォルダ /work/app')
-    expect(call.prompt).toMatch(/^【AgentSync からのお知らせ】\nこのターンでは、作業フォルダ（app）のファイルの変更とコマンドの実行ができます。/)
+    expect(call.prompt).toMatch(/^【AgentSync】\nThis turn you may change files/)
     expect(call.prompt).toContain('【ユーザー → あなた】\nテストを直して')
 
     // Claude is still changing things, so GPT may only read.
     orchestrator.send({ text: '設計を見て', to: 'gpt' })
     await flush()
     expect(gpt.calls[0]!.access).toBe('read')
-    expect(gpt.calls[0]!.prompt).toMatch(/^【AgentSync からのお知らせ】\nこのターンは読み取り専用です。/)
+    expect(gpt.calls[0]!.prompt).toMatch(/^【AgentSync】\nThis turn is read-only/)
     claude.reply('直しました')
     gpt.reply('良さそう')
     await flush()
@@ -627,7 +626,7 @@ describe('Orchestrator 実装＋レビュー', () => {
     expect(orchestrator.snapshot().state.review).toEqual({ implementer: 'claude', reviewer: 'gpt', round: 1, maxRounds: 3, phase: 'implement' })
     expect(messages().find((m) => m.notice === 'review-start')!.text).toBe('ここから実装＋レビュー · 実装: Claude、レビュー: GPT（最大 3 往復）')
     expect(claude.calls[1]!.access).toBe('write')
-    expect(claude.calls[1]!.prompt).toContain('あなたが実装役、GPT がレビュー役です。')
+    expect(claude.calls[1]!.prompt).toContain("Implement + review: implement the user's last request. GPT reviews")
 
     claude.reply('作りました')
     await flush()

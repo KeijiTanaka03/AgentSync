@@ -287,7 +287,10 @@ export class ClaudeSession {
     let reject!: Turn['reject']
     const promise = new Promise<AgentRunResult>((done, fail) => { resolve = done; reject = fail })
     const parser = new ClaudeStreamParser(request?.access === 'chat' ? null : this.options.cwd)
-    const turn: Turn = { id, request, parser, promise, resolve, reject, onUsage, stop: () => this.interrupt(turn) }
+    const turn: Turn = {
+      id, request: request && { ...request, attachments: [...(request.attachments ?? [])] },
+      parser, promise, resolve, reject, onUsage, stop: () => this.interrupt(turn),
+    }
     this.turn = turn
     const { stop } = turn
     request?.signal.addEventListener('abort', stop, { once: true })
@@ -388,6 +391,7 @@ export class ClaudeSession {
               const content = await userContent(text, attachments, request.signal)
               if (this.turn !== turn || this.closing || this.retiring || request.signal.aborted || !this.child.stdin.writable) return false
               const uuid = randomUUID()
+              request.attachments?.push(...(attachments ?? []))
               return new Promise<boolean>((resolve) => {
                 turn.followups!.set(uuid, resolve)
                 this.send({ type: 'user', uuid, priority: 'next', parent_tool_use_id: null, message: { role: 'user', content } })

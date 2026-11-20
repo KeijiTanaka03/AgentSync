@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { execFile } from 'node:child_process'
 import type { AgentActivity, AgentChoices, ApprovalMode, TokenUsage, ToolLogEntry } from '../../shared/types'
 import { parseTokenUsage } from '../../shared/validate'
 import type { Access, AgentAdapter, AgentAttachment, AgentRunRequest, AgentRunResult, ApprovalRequest } from './types'
@@ -128,10 +129,27 @@ function relativeTo(cwd: string, file: unknown): string {
   return relative && !relative.startsWith('..') ? relative : text
 }
 
-/** A user message as Codex builds it: images attached as images; other files by path in the text. */
-function codexInput(text: string, attachments: AgentAttachment[] | undefined): Json[] {
+const PDF_TEXT_LIMIT = 32_000
+
+/** Pass PDF text as user input so Codex does not need to run a command to read it. */
+async function codexInput(text: string, attachments: AgentAttachment[] | undefined, signal: AbortSignal): Promise<Json[]> {
+  let remaining = PDF_TEXT_LIMIT
+  const pdfs: string[] = []
+  for (const file of attachments ?? []) {
+    if (file.mediaType !== 'application/pdf' || !path.isAbsolute(file.path) || remaining <= 0 || signal.aborted) continue
+    const content = await new Promise<string>((resolve) => {
+      execFile('pdftotext', ['-enc', 'UTF-8', file.path, '-'], {
+        signal, timeout: 5_000, maxBuffer: 512 * 1024,
+      }, (error, stdout) => resolve(error ? '' : stdout.trim()))
+    })
+    if (!content) continue
+    const excerpt = content.slice(0, remaining)
+    remaining -= excerpt.length
+    const suffix = excerpt.length < content.length ? '\n… (truncated)' : ''
+    pdfs.push(`Attached PDF ${JSON.stringify(file.name)}:\n${excerpt}${suffix}`)
+  }
   return [
-    { type: 'text', text, text_elements: [] },
+    { type: 'text', text: [text, ...pdfs].join('\n\n'), text_elements: [] },
     ...(attachments ?? []).filter((file) => file.mediaType?.startsWith('image/')).map((file) => ({ type: 'localImage', path: file.path })),
   ]
 }
@@ -273,7 +291,9 @@ export class CodexAdapter implements AgentAdapter {
 
     this.threadAlways.set(threadId, always)
     const overrides = await this.turnOverrides(threadId, request)
-    return this.runTurn(rpc, threadId, request, overrides)
+    const input = await codexInput(request.prompt, request.attachments, request.signal)
+    if (request.signal.aborted) return { text: '', status: 'stopped' }
+    return this.runTurn(rpc, threadId, request, overrides, input)
   }
 
   async choices(model: string | null): Promise<AgentChoices> {
@@ -426,7 +446,7 @@ export class CodexAdapter implements AgentAdapter {
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), complete: model !== null && effort !== null }
   }
 
-  private runTurn(rpc: RpcConnection, threadId: string, request: AgentRunRequest, overrides: TurnOverrides): Promise<AgentRunResult> {
+  private runTurn(rpc: RpcConnection, threadId: string, request: AgentRunRequest, overrides: TurnOverrides, input: Json[]): Promise<AgentRunResult> {
     const policy = codexPolicy(request.access, request.approval)
     return new Promise<AgentRunResult>((resolve, reject) => {
       let turnId: string | null = null
@@ -436,6 +456,7 @@ export class CodexAdapter implements AgentAdapter {
       let lastError: string | null = null
       let tokenUsage = ZERO_TOKENS
       let firstRequestUsage: TokenUsage | undefined
+      let steerQueue: Promise<unknown> = Promise.resolve()
       // Agent message items in arrival order; a turn may contain more than one.
       const items = new Map<string, string>()
       // Codex marks what it says while working as commentary; like Codex itself, that is not the answer.
@@ -604,7 +625,7 @@ export class CodexAdapter implements AgentAdapter {
       rpc
         .request<TurnStartResponse>('turn/start', {
           threadId,
-          input: codexInput(request.prompt, request.attachments),
+          input,
           // A coding thread changes between reading and writing from turn to turn.
           ...(request.access === 'chat'
             ? {}
@@ -614,10 +635,16 @@ export class CodexAdapter implements AgentAdapter {
         })
         .then((started) => {
           turnId = started.turn.id
-          if (!finished) request.onSteer?.(async (text, attachments) => {
-            if (finished || request.signal.aborted || !turnId) return false
-            await rpc.request('turn/steer', { threadId, expectedTurnId: turnId, input: codexInput(text, attachments) })
-            return true
+          if (!finished) request.onSteer?.((text, attachments) => {
+            const next = steerQueue.then(async () => {
+              if (finished || request.signal.aborted || !turnId) return false
+              const input = await codexInput(text, attachments, request.signal)
+              if (finished || request.signal.aborted) return false
+              await rpc.request('turn/steer', { threadId, expectedTurnId: turnId, input })
+              return true
+            })
+            steerQueue = next.catch(() => false)
+            return next
           })
           // The thread now runs at the chosen settings (null: the CLI's own ones).
           if (overrides.complete) this.threadSettings.set(threadId, { model: request.model, effort: request.effort })

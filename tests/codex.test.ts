@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as childProcess from 'node:child_process'
 import { CodexAdapter, unwrapShell } from '../src/main/agents/codex'
 import type { RpcConnection } from '../src/main/agents/jsonRpc'
 import type { AgentRunRequest } from '../src/main/agents/types'
 import type { AgentActivity, TokenUsage, ToolLogEntry } from '../src/shared/types'
 import type { ApprovalRequest } from '../src/main/agents/types'
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const original = await importOriginal<typeof childProcess>()
+  return { ...original, execFile: vi.fn(original.execFile) }
+})
 
 /** A stand-in for `codex app-server` that records requests and lets the test push notifications. */
 class FakeAppServer implements RpcConnection {
@@ -180,6 +186,27 @@ describe('CodexAdapter', () => {
     ])
     server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
     await expect(reply).resolves.toMatchObject({ status: 'done' })
+  })
+
+  it('passes PDF text directly to Codex without asking it to run a command', async () => {
+    const exec = vi.mocked(childProcess.execFile)
+    exec.mockImplementationOnce(((_file: string, _args: string[], _options: unknown, callback: (err: null, stdout: string, stderr: string) => void) => {
+      callback(null, 'Sample attachment text', '')
+    }) as unknown as typeof childProcess.execFile)
+    try {
+      const { server, adapter } = setup()
+      const { req } = request({ attachments: [
+        { name: 'form.pdf', path: '/tmp/attachment folder/form.pdf', size: 40, mediaType: 'application/pdf' },
+      ] })
+      const reply = adapter.run(req)
+      await flush()
+      expect(exec).toHaveBeenCalledWith('pdftotext', ['-enc', 'UTF-8', '/tmp/attachment folder/form.pdf', '-'], expect.anything(), expect.any(Function))
+      expect(server.requests.find((entry) => entry.method === 'turn/start')!.params.input[0].text).toContain('Sample attachment text')
+      server.push('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } })
+      await expect(reply).resolves.toMatchObject({ status: 'done' })
+    } finally {
+      exec.mockClear()
+    }
   })
 
   it('starts a read-only thread, streams the reply and finishes with the turn', async () => {

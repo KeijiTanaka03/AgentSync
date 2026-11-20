@@ -28,7 +28,7 @@ import {
 import { titleFromMessage } from '../../shared/validate'
 import type { Access, AgentAdapter, AgentAttachment, ApprovalRequest } from '../agents/types'
 import type { ConversationContent, StoredParticipant } from '../store/conversationStore'
-import { attachmentsFor, chatSystemPrompt, codeSystemPrompt, collectUnseen, formatUnseen, isApproved, replyTarget, turnNote } from './prompt'
+import { attachmentsFor, collectUnseen, GROUP_CHAT_PROMPT, formatUnseen, isApproved, replyTarget, turnNote } from './prompt'
 
 /** The changes in a project folder, for the reviewer. */
 export interface GitDiff {
@@ -627,7 +627,7 @@ export class Orchestrator {
     )
     try {
       const text = formatUnseen(unseen, id, this.options.attachmentPath)
-      const prompt = workspace && access !== 'chat' ? `${turnNote(access, this.approvalMode, workspace.name)}\n\n${text}` : text
+      const prompt = workspace && access !== 'chat' ? `${turnNote(access, this.approvalMode)}\n\n${text}` : text
       const attachments: AgentAttachment[] = []
       for (const message of unseen) {
         for (const file of attachmentsFor(message, id)) {
@@ -658,7 +658,7 @@ export class Orchestrator {
           }
         },
         ...(attachments.length ? { attachments } : {}),
-        systemPrompt: workspace ? codeSystemPrompt(id, workspace.path) : chatSystemPrompt(id),
+        systemPrompt: GROUP_CHAT_PROMPT,
         sessionId: agent.sessionId,
         cwd: workspace?.path ?? this.options.cwd,
         model: agent.info.model,

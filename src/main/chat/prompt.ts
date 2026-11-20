@@ -19,44 +19,30 @@ export function isApproved(reply: string): boolean {
   return /^[\s*_`#>]*APPROVED\b/.test(first)
 }
 
-/** What a notice in the timeline tells each agent. */
+/** What a notice in the timeline tells each agent. Prompts are in English: fewer tokens. */
 function noticeForAgent(message: ChatMessage, self: AgentId): string {
   const other = PROMPT_NAMES[otherAgent(self)]
   switch (message.notice) {
     case 'dialogue-start':
-      return [
-        `ここから「対話モード」です。あなたと ${other} が交互に発言し、ユーザーが止めるまで続きます。`,
-        `${other} の発言に応じて、賛成・反論・補足・質問などで話を前に進めてください。同じことの繰り返しは避けてください。`,
-        'ユーザーの発言が途中で届いたら、それも踏まえてください。',
-      ].join('')
+      return `Dialogue mode: you and ${other} take turns until the user stops it.`
     case 'dialogue-stop':
-      return '対話モードが終わりました。ここからは普段のチャットに戻ります。'
-    case 'review-start': {
-      const implementer = message.implementer ?? 'claude'
-      return implementer === self
-        ? [
-            `ここから「実装＋レビュー」です。あなたが実装役、${other} がレビュー役です。`,
-            '直前のユーザーの依頼を実装し、必要ならテストも実行してください。終わったら、何を変えたかを短くまとめてください。',
-            `あなたの作業が終わるたびに、アプリが変更（git diff）を ${other} に渡します。${other} の指摘が届いたら、それに従って直してください。`,
-          ].join('')
-        : [
-            `ここから「実装＋レビュー」です。${other} が実装役、あなたがレビュー役です。`,
-            `${other} の作業が終わるたびに、依頼と変更（git diff）が届きます。読み取り専用で確かめ、問題があれば具体的に（ファイル・場所・直し方）指摘してください。`,
-            '問題がなければ、返事の最初の行に APPROVED とだけ書いてください。',
-          ].join('')
-    }
+      return 'Dialogue mode ended.'
+    case 'review-start':
+      return (message.implementer ?? 'claude') === self
+        ? `Implement + review: implement the user's last request. ${other} reviews your git diff after each turn; fix what ${other} points out.`
+        : `Implement + review: ${other} implements, you review the request and git diff sent after each turn, read-only. Point out problems specifically (file, place, fix).`
     case 'review-diff': {
       const diff = message.detail ?? ''
       return message.implementer === self || self !== reviewerOf(message)
-        ? `いまの変更（git diff）を、レビュー役の ${other} に渡しました。`
+        ? `Your git diff was sent to ${other} for review.`
         : [
-            `${other} の作業が終わりました。いまの変更（git diff）です。`,
-            diff ? `\n\n\`\`\`diff\n${diff}\n\`\`\`\n\n` : '（差分を取れませんでした。git のリポジトリではないか、変更がありません）\n\n',
-            '読み取り専用でレビューしてください。問題があれば具体的に指摘してください。問題がなければ、返事の最初の行に APPROVED とだけ書いてください。',
+            `${other} finished. Current git diff:`,
+            diff ? `\n\n\`\`\`diff\n${diff}\n\`\`\`\n\n` : ' (none: not a git repository, or no changes)\n\n',
+            'Review it read-only. If there are no problems, reply with APPROVED on the first line.',
           ].join('')
     }
     case 'review-stop':
-      return '実装＋レビューが終わりました。ここからは普段のチャットに戻ります。'
+      return 'Implement + review ended.'
     default:
       return message.text
   }
@@ -87,14 +73,13 @@ export function attachmentsFor(message: ChatMessage, agent: AgentId): readonly F
 export function formatUnseen(unseen: readonly ChatMessage[], self: AgentId, filePath?: (file: FileAttachment) => string | null): string {
   return unseen
     .map((m) => {
-      if (m.from === 'system') return `【AgentSync からのお知らせ】\n${noticeForAgent(m, self)}`
-      const note = m.status === 'stopped' ? '\n（この発言は途中で止められました）' : ''
+      if (m.from === 'system') return `【AgentSync】\n${noticeForAgent(m, self)}`
       const files = attachmentsFor(m, self).map((file) => {
         const location = filePath?.(file)
-        return location ? `- ${JSON.stringify(file.name)} ${JSON.stringify(location)}` : `- ${JSON.stringify(file.name)}（ファイルを読み込めません）`
+        return location ? `- ${JSON.stringify(file.name)} ${JSON.stringify(location)}` : `- ${JSON.stringify(file.name)} (unavailable)`
       })
-      const attached = files.length ? `\n\n添付ファイル（必要に応じて内容を読んでください）\n${files.join('\n')}` : ''
-      return `【${PROMPT_NAMES[m.from]} → ${recipientLabel(m.to, self)}】\n${m.text.trim()}${note}${attached}`
+      const attached = files.length ? `\n\nAttached files:\n${files.join('\n')}` : ''
+      return `【${PROMPT_NAMES[m.from]} → ${recipientLabel(m.to, self)}】\n${m.text.trim()}${attached}`
     })
     .join('\n\n')
 }
@@ -109,47 +94,19 @@ export function replyTarget(unseen: readonly ChatMessage[], self: AgentId): Reci
 }
 
 /** For a coding conversation: what the agent may do on this turn, said at the start of its prompt. */
-export function turnNote(access: 'read' | 'write', approval: ApprovalMode, folder: string): string {
+export function turnNote(access: 'read' | 'write', approval: ApprovalMode): string {
   const note =
-    access === 'write'
-      ? `このターンでは、作業フォルダ（${folder}）のファイルの変更とコマンドの実行ができます。${
-          approval === 'auto'
-            ? 'ファイル変更・コマンド実行・外部操作は確認なしで許可されています（auto）。依頼に必要なら、作業フォルダ外の変更や連携の操作も追加確認なしで進めてください。'
-            : '変更とコマンドの実行の前には、ユーザーの承認を求めます（承認制）。ファイルを変更するのは作業フォルダの中だけにしてください。'
-        }`
-      : 'このターンは読み取り専用です。ファイルを読んだり検索したりするコマンド（cat・sed -n・rg・ls など）は使えます。ファイルを変更する操作と、変更を伴うコマンドはしないでください。'
-  return `【AgentSync からのお知らせ】\n${note}`
+    access === 'read'
+      ? 'This turn is read-only: read and search, change nothing.'
+      : approval === 'auto'
+        ? 'This turn you may change files and run commands, without approval (auto), outside the folder too.'
+        : 'This turn you may change files in the folder and run commands; each needs user approval.'
+  return `【AgentSync】\n${note}`
 }
 
-/** For a coding conversation: the group chat explained on top of the CLI's own coding instructions. */
-/** Stays the same for the whole conversation, so the CLI keeps its prompt cache; per-turn rules go in turnNote. */
-export function codeSystemPrompt(self: AgentId, workdir: string): string {
-  const other = self === 'claude' ? 'GPT' : 'Claude'
-  return [
-    `あなたは「${PROMPT_NAMES[self]}」として、グループチャットに参加しています。参加者は、ユーザー（人間）、Claude、GPT の 3 人です。`,
-    `このチャットは、プロジェクトのフォルダ ${workdir} での開発に使われています。`,
-    '',
-    '- 新しい発言は「【発言者 → 宛先】」という見出し付きで届きます。あなたが前回発言したあとに増えた分が、まとめて届きます。',
-    '- 宛先が「あなた」か「全員」の発言に応えてください。それ以外の発言は、会話の流れとして読んでおいてください。',
-    `- ${other} は、同じチャットにいる別の AI です。${other} の発言や変更には、賛成・反対・補足など、自分の考えで応じて構いません。`,
-    '- 各ターンの最初に「【AgentSync からのお知らせ】」で、そのターンにできること（読み取り専用か、ファイルの変更とコマンドの実行ができるか）が届きます。従ってください。お知らせそのものには、返事の中で触れなくて構いません（承認はアプリが取ります）。',
-    '- ウェブ検索や、つないである連携（Notion など）も使えます。何かを変える操作に承認が要るかどうかも、そのお知らせに従ってください。',
-    '- あなたの返答は、そのままあなたの吹き出しとしてチャットに表示されます。見出しや自分の名前を先頭に付けないでください。',
-    '- ユーザーと同じ言語で答えてください。作業をしたときは、何を変えたかを短くまとめてください。Markdown を使えます。',
-  ].join('\n')
-}
-
-export function chatSystemPrompt(self: AgentId): string {
-  const other = self === 'claude' ? 'GPT' : 'Claude'
-  return [
-    `あなたは「${PROMPT_NAMES[self]}」として、グループチャットに参加しています。参加者は、ユーザー（人間）、Claude、GPT の 3 人です。`,
-    '',
-    '- 新しい発言は「【発言者 → 宛先】」という見出し付きで届きます。あなたが前回発言したあとに増えた分が、まとめて届きます。',
-    '- 宛先が「あなた」か「全員」の発言に返答してください。それ以外の発言は、会話の流れとして読んでおいてください。',
-    `- ${other} は、同じチャットにいる別の AI です。${other} の発言には、賛成・反対・補足など、自分の考えで応じて構いません。`,
-    '- 「【AgentSync からのお知らせ】」は、このチャットのアプリからの案内です。従ってください。',
-    '- ウェブ検索や、つないである連携（Notion など）は、普段どおり使って構いません。作成・変更・削除のように何かを変える操作は、実行の前にアプリがユーザーの承認を取ります。',
-    '- あなたの返答は、そのままあなたの吹き出しとしてチャットに表示されます。見出しや自分の名前を先頭に付けないでください。',
-    '- ユーザーと同じ言語で、チャットらしく簡潔に答えてください。Markdown を使えます。',
-  ].join('\n')
-}
+/**
+ * The one rule a CLI's own instructions cannot know: the others' messages arrive too, for context, and only
+ * those addressed to this agent are to be answered. Stays the same for the whole conversation (prompt cache).
+ */
+export const GROUP_CHAT_PROMPT =
+  'This is a group chat. Messages arrive headed 【sender → recipient】. Reply only to those addressed to あなた or 全員, and do not head your reply.'

@@ -76,6 +76,12 @@ export function describePermission(toolName: string, input: Json, cwd: string): 
   return { kind: kind === 'command' ? 'command' : 'other', title: `${toolName} を使う${title && title !== toolName ? `: ${title}` : ''}`, detail: clip(JSON.stringify(input, null, 2)) }
 }
 
+/** A file the user attached to this turn: the user gave it to be read, so reading it needs no approval. */
+function readsAttachment(toolName: string, input: Json, request: Pick<AgentRunRequest, 'attachments'>): boolean {
+  if (toolName !== 'Read' || typeof input.file_path !== 'string') return false
+  return (request.attachments ?? []).some((file) => file.path === input.file_path)
+}
+
 /** Files outside the project folder are never written. */
 export function writesOutside(toolName: string, input: Json, cwd: string): boolean {
   if (!EDIT_TOOLS.has(toolName)) return false
@@ -139,6 +145,7 @@ export async function approveClaudeTool(request: AgentRunRequest, tool: string, 
     return decision === 'allow' ? true : 'ユーザーが許可しませんでした。'
   }
   if (WEB_TOOLS.has(tool)) return true
+  if (readsAttachment(tool, input, request)) return true
   // A read-only turn changes nothing. A read Claude Code asks about (outside the project) is the user's call;
   // a command it asks about could write, and an approval would let it, so it is refused.
   if (request.access === 'read' && !READ_TOOLS.has(tool)) return 'このターンは読み取り専用です。'
@@ -174,6 +181,8 @@ export class ClaudeAdapter implements AgentAdapter {
     // The mode stays manual even for auto, which approveClaudeTool allows. A read-only turn keeps the same tools,
     // as Claude Code's own modes do, so the process and its prompt cache stay; what Claude Code asks about is
     // refused there, while commands the user's settings already allow go ahead as in Claude Code.
+    // Never narrow the tools with --tools: that also drops ToolSearch, and every connector's definitions
+    // (about 100k tokens for claude.ai Notion, Drive and Docs) would then be sent with each request.
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--append-system-prompt', request.systemPrompt]
     args.push('--input-format', 'stream-json', '--permission-mode', 'manual', '--permission-prompts', 'host', '--permission-prompt-tool', 'stdio')
     args.push('--settings', JSON.stringify(MCP_ASK_SETTINGS))

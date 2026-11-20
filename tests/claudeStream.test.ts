@@ -378,4 +378,22 @@ describe('Claude Code permissions on a read-only turn', () => {
     await expect(approveClaudeTool(request, 'Edit', { file_path: 'a.ts' })).resolves.toBe('このターンは読み取り専用です。')
     expect(asked).toHaveLength(1)
   })
+
+  it('reads a file attached to the turn without asking, and asks for any other file', async () => {
+    const { approveClaudeTool } = await import('../src/main/agents/claude')
+    const asked: string[] = []
+    const attached = '/data/attachments/c1/f1/form.pdf'
+    for (const access of ['chat', 'read', 'write'] as const) {
+      const request = {
+        access, approval: 'ask', cwd: '/work/app',
+        attachments: [{ name: 'form.pdf', size: 1, path: attached }],
+        requestApproval: async (ask: { title: string }) => { asked.push(ask.title); return 'allow' as const },
+        askUser: async () => null,
+      } as unknown as Parameters<typeof approveClaudeTool>[0]
+      await expect(approveClaudeTool(request, 'Read', { file_path: attached })).resolves.toBe(true)
+      await expect(approveClaudeTool(request, 'Read', { file_path: '/data/attachments/c1/f1/other.pdf' })).resolves.toBe(true)
+      if (access !== 'chat') await expect(approveClaudeTool(request, 'Edit', { file_path: attached })).resolves.not.toBe(true)
+    }
+    expect(asked).toHaveLength(3)
+  })
 })

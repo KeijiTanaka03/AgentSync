@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatSystemPrompt, collectUnseen, formatUnseen, isApproved, replyTarget, turnNote } from '../src/main/chat/prompt'
+import { collectUnseen, GROUP_CHAT_PROMPT, formatUnseen, isApproved, replyTarget, turnNote } from '../src/main/chat/prompt'
 import type { ChatMessage } from '../src/shared/types'
 
 let id = 0
@@ -45,7 +45,7 @@ describe('formatUnseen', () => {
         '【ユーザー → 全員】\nDB は何がいい？',
         '【GPT → ユーザー】\nPostgres です',
         '【ユーザー → あなた】\nClaude はどう思う？',
-        '【GPT → あなた】\n反論ある？\n（この発言は途中で止められました）',
+        '【GPT → あなた】\n反論ある？',
       ].join('\n\n'),
     )
   })
@@ -57,9 +57,9 @@ describe('notices from AgentSync', () => {
 
   it('are delivered to both agents, worded for each', () => {
     expect(collectUnseen([start], 'claude', new Set())).toEqual([start])
-    expect(formatUnseen([start], 'claude')).toMatch(/^【AgentSync からのお知らせ】\nここから「対話モード」です。あなたと GPT が交互に発言し/)
-    expect(formatUnseen([start], 'gpt')).toContain('あなたと Claude が交互に発言し')
-    expect(formatUnseen([stop], 'gpt')).toBe('【AgentSync からのお知らせ】\n対話モードが終わりました。ここからは普段のチャットに戻ります。')
+    expect(formatUnseen([start], 'claude')).toBe('【AgentSync】\nDialogue mode: you and GPT take turns until the user stops it.')
+    expect(formatUnseen([start], 'gpt')).toContain('you and Claude take turns')
+    expect(formatUnseen([stop], 'gpt')).toBe('【AgentSync】\nDialogue mode ended.')
   })
 
   it('are never what an agent replies to', () => {
@@ -68,9 +68,6 @@ describe('notices from AgentSync', () => {
     expect(replyTarget([start], 'claude')).toBe('user')
   })
 
-  it('are explained in the system prompt', () => {
-    expect(chatSystemPrompt('claude')).toContain('「【AgentSync からのお知らせ】」は、このチャットのアプリからの案内です')
-  })
 })
 
 describe('実装＋レビュー notices', () => {
@@ -78,14 +75,14 @@ describe('実装＋レビュー notices', () => {
   const diff = message({ from: 'system', to: 'all', text: '変更を渡しました', notice: 'review-diff', implementer: 'claude', detail: '-a\n+b' })
 
   it('give each agent its role', () => {
-    expect(formatUnseen([start], 'claude')).toContain('あなたが実装役、GPT がレビュー役です。')
-    expect(formatUnseen([start], 'gpt')).toContain('Claude が実装役、あなたがレビュー役です。')
-    expect(formatUnseen([start], 'gpt')).toContain('返事の最初の行に APPROVED とだけ書いてください')
+    expect(formatUnseen([start], 'claude')).toContain("implement the user's last request. GPT reviews")
+    expect(formatUnseen([start], 'gpt')).toContain('Claude implements, you review')
+    expect(formatUnseen([diff], 'gpt')).toContain('reply with APPROVED on the first line')
   })
 
   it('hand the diff to the reviewer only', () => {
     expect(formatUnseen([diff], 'gpt')).toContain('```diff\n-a\n+b\n```')
-    expect(formatUnseen([diff], 'claude')).toBe('【AgentSync からのお知らせ】\nいまの変更（git diff）を、レビュー役の GPT に渡しました。')
+    expect(formatUnseen([diff], 'claude')).toBe('【AgentSync】\nYour git diff was sent to GPT for review.')
   })
 
   it('recognise APPROVED on the first line only', () => {
@@ -106,19 +103,16 @@ describe('replyTarget', () => {
   })
 })
 
-describe('chatSystemPrompt', () => {
-  it('names the agent and the other participant', () => {
-    expect(chatSystemPrompt('claude')).toContain('あなたは「Claude」')
-    expect(chatSystemPrompt('claude')).toContain('GPT は、同じチャットにいる別の AI')
-    expect(chatSystemPrompt('gpt')).toContain('あなたは「GPT」')
+describe('GROUP_CHAT_PROMPT', () => {
+  it('asks to answer only messages addressed to the agent, without headings', () => {
+    expect(GROUP_CHAT_PROMPT).toContain('Reply only to those addressed to あなた or 全員')
+    expect(GROUP_CHAT_PROMPT).toContain('do not head your reply')
   })
 })
 
 describe('turnNote', () => {
   it('lets a read-only turn read files with commands, but not change them', () => {
-    const note = turnNote('read', 'ask', 'app')
-    expect(note).toContain('ファイルを読んだり検索したりするコマンド（cat・sed -n・rg・ls など）は使えます')
-    expect(note).not.toContain('コマンドの実行はしないでください')
+    expect(turnNote('read', 'ask')).toBe('【AgentSync】\nThis turn is read-only: read and search, change nothing.')
   })
 })
 
